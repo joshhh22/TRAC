@@ -1,20 +1,583 @@
 package com.example.trac
 
+import android.app.Activity
 import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.trac.components.ProfileSidebarDrawer
+import com.example.trac.components.SidebarMenuItem
+import com.example.trac.components.TracBottomNavBar
+import com.example.trac.data.ReportData
+import com.example.trac.data.SessionPreferences
+import com.example.trac.viewmodel.AuthUiState
+import com.example.trac.viewmodel.AuthViewModel
+import com.example.trac.viewmodel.ReportUiState
+import com.example.trac.viewmodel.ReportViewModel
 
-class MainActivity : AppCompatActivity() {
+enum class Screen {
+    SPLASH,
+    LOGIN,
+    REGISTER,
+    HOME,
+    REPORT_LIST,
+    REPORT_DETAIL,
+    CREATE_REPORT,
+    TERMS,
+    NOTIFICATIONS,
+    EDIT_IDENTITY,
+    SETTINGS
+}
+
+class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        setContentView(R.layout.activity_main)
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-            insets
+
+        // Make status bar & navigation bar transparent
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        insetsController.isAppearanceLightStatusBars = true
+        insetsController.isAppearanceLightNavigationBars = true
+
+        // Force light status bar & navigation bar icons regardless of System Dark Mode
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            ),
+            navigationBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
+
+        setContent {
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    background = Color(0xFFF8FAFD),
+                    surface = Color.White
+                )
+            ) {
+                TRACApp()
+            }
+        }
+    }
+}
+
+@Composable
+fun TRACApp(
+    authViewModel: AuthViewModel = viewModel(),
+    reportViewModel: ReportViewModel = viewModel()
+) {
+    val context = LocalContext.current
+    val sessionPrefs = remember { SessionPreferences(context) }
+
+    // 1. Check persistent local login session ("cookies") on app launch
+    val isAlreadyLoggedIn = remember { authViewModel.isUserLoggedIn() }
+
+    var currentScreen by remember {
+        mutableStateOf(if (isAlreadyLoggedIn) Screen.HOME else Screen.SPLASH)
+    }
+
+    var isSidebarOpen by remember { mutableStateOf(false) }
+
+    var isIndonesianLanguage by remember { mutableStateOf(sessionPrefs.isIndonesian()) }
+    var isAppDarkMode by remember { mutableStateOf(sessionPrefs.isDarkMode()) }
+
+    var previousScreen by remember { mutableStateOf(Screen.HOME) }
+    var backPressedTime by remember { mutableLongStateOf(0L) }
+
+    var bannerErrorMessage by remember { mutableStateOf<String?>(null) }
+
+    var loggedInUserName by remember {
+        mutableStateOf(authViewModel.getLoggedInUserName())
+    }
+
+    var loggedInUserClass by remember {
+        mutableStateOf(authViewModel.getLoggedInUserClass())
+    }
+
+    var loggedInProfileImage by remember {
+        mutableStateOf(authViewModel.getLoggedInUserProfileImage())
+    }
+
+    // Selected Report for Detail View
+    var selectedReport by remember { mutableStateOf<ReportData?>(null) }
+
+    val authState by authViewModel.uiState.collectAsState()
+    val reportUiState by reportViewModel.uiState.collectAsState()
+    val liveReportsList by reportViewModel.reports.collectAsState()
+
+    // 2. System Back Gesture & Back Button Handling
+    BackHandler(enabled = true) {
+        if (isSidebarOpen) {
+            isSidebarOpen = false
+            return@BackHandler
+        }
+
+        when (currentScreen) {
+            Screen.HOME, Screen.SPLASH -> {
+                val currentTime = System.currentTimeMillis()
+                if (currentTime - backPressedTime < 2000) {
+                    (context as? Activity)?.finish()
+                } else {
+                    backPressedTime = currentTime
+                    Toast.makeText(context, "Tekan sekali lagi untuk keluar", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            Screen.REPORT_DETAIL -> {
+                currentScreen = previousScreen
+            }
+
+            Screen.REPORT_LIST, Screen.CREATE_REPORT, Screen.NOTIFICATIONS, Screen.EDIT_IDENTITY, Screen.SETTINGS -> {
+                currentScreen = Screen.HOME
+            }
+
+            Screen.REGISTER, Screen.LOGIN -> {
+                currentScreen = Screen.SPLASH
+            }
+
+            Screen.TERMS -> {
+                currentScreen = Screen.REGISTER
+            }
+        }
+    }
+
+    // Handle Auth UI States
+    LaunchedEffect(authState) {
+        when (val state = authState) {
+            is AuthUiState.Success -> {
+                bannerErrorMessage = null
+                if (state.isLoginSuccess) {
+                    loggedInUserName = authViewModel.getLoggedInUserName()
+                    loggedInUserClass = authViewModel.getLoggedInUserClass()
+                    loggedInProfileImage = authViewModel.getLoggedInUserProfileImage()
+                    reportViewModel.fetchReports()
+                    currentScreen = Screen.HOME
+                } else {
+                    currentScreen = Screen.LOGIN
+                }
+                authViewModel.resetState()
+            }
+
+            is AuthUiState.Error -> {
+                bannerErrorMessage = state.message
+            }
+
+            else -> {}
+        }
+    }
+
+    // Handle Report UI States
+    LaunchedEffect(reportUiState) {
+        when (val state = reportUiState) {
+            is ReportUiState.Success -> {
+                bannerErrorMessage = null
+                reportViewModel.fetchReports()
+                currentScreen = Screen.REPORT_LIST
+                reportViewModel.resetState()
+            }
+
+            is ReportUiState.Error -> {
+                bannerErrorMessage = state.message
+            }
+
+            else -> {}
+        }
+    }
+
+    val showBottomBar = currentScreen in listOf(
+        Screen.HOME,
+        Screen.REPORT_LIST,
+        Screen.REPORT_DETAIL,
+        Screen.CREATE_REPORT,
+        Screen.NOTIFICATIONS
+    )
+
+    val pageBgColor = if (isAppDarkMode) Color(0xFF0F172A) else Color(0xFFF8FAFD)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
+        color = pageBgColor
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            AnimatedContent(
+                targetState = currentScreen,
+                transitionSpec = {
+                    val isTabNavigation = (initialState in listOf(Screen.HOME, Screen.REPORT_LIST, Screen.REPORT_DETAIL, Screen.CREATE_REPORT, Screen.NOTIFICATIONS)) &&
+                            (targetState in listOf(Screen.HOME, Screen.REPORT_LIST, Screen.REPORT_DETAIL, Screen.CREATE_REPORT, Screen.NOTIFICATIONS))
+
+                    if (isTabNavigation) {
+                        (fadeIn(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
+                                scaleIn(initialScale = 0.98f, animationSpec = tween(240, easing = FastOutSlowInEasing)))
+                            .togetherWith(
+                                fadeOut(animationSpec = tween(180, easing = FastOutSlowInEasing)) +
+                                        scaleOut(targetScale = 0.98f, animationSpec = tween(180, easing = FastOutSlowInEasing))
+                            )
+                    } else {
+                        val isForward = targetState.ordinal > initialState.ordinal
+                        if (isForward) {
+                            (slideInHorizontally { width -> width } + fadeIn()).togetherWith(
+                                slideOutHorizontally { width -> -width / 3 } + fadeOut()
+                            )
+                        } else {
+                            (slideInHorizontally { width -> -width } + fadeIn()).togetherWith(
+                                slideOutHorizontally { width -> width / 3 } + fadeOut()
+                            )
+                        }
+                    }
+                },
+                label = "ScreenNavigationTransition"
+            ) { screen ->
+                when (screen) {
+                    Screen.SPLASH -> {
+                        SplashTracScreen(
+                            onLoginClick = {
+                                bannerErrorMessage = null
+                                currentScreen = Screen.LOGIN
+                            },
+                            onRegisterClick = {
+                                bannerErrorMessage = null
+                                currentScreen = Screen.REGISTER
+                            }
+                        )
+                    }
+
+                    Screen.LOGIN -> {
+                        LoginTracScreen(
+                            isLoading = authState is AuthUiState.Loading,
+                            errorMessage = bannerErrorMessage,
+                            onLoginClick = { email, pass ->
+                                bannerErrorMessage = null
+                                authViewModel.login(email, pass)
+                            },
+                            onRegisterClick = {
+                                bannerErrorMessage = null
+                                authViewModel.resetState()
+                                currentScreen = Screen.REGISTER
+                            },
+                            onForgotPasswordClick = {
+                                bannerErrorMessage = "Fitur lupa kata sandi dapat diatur melalui Supabase Auth Dashboard."
+                            }
+                        )
+                    }
+
+                    Screen.REGISTER -> {
+                        RegisterTracScreen(
+                            isLoading = authState is AuthUiState.Loading,
+                            errorMessage = bannerErrorMessage,
+                            onSignUpClick = { name, email, userClass, pass, confirmPass ->
+                                bannerErrorMessage = null
+                                authViewModel.register(name, email, userClass, pass, confirmPass)
+                            },
+                            onLoginClick = {
+                                bannerErrorMessage = null
+                                authViewModel.resetState()
+                                currentScreen = Screen.LOGIN
+                            },
+                            onTermsClick = {
+                                bannerErrorMessage = null
+                                currentScreen = Screen.TERMS
+                            }
+                        )
+                    }
+
+                    Screen.TERMS -> {
+                        TermsTracScreen(
+                            onBackClick = {
+                                currentScreen = Screen.REGISTER
+                            },
+                            onAcceptClick = {
+                                currentScreen = Screen.REGISTER
+                            }
+                        )
+                    }
+
+                    Screen.HOME -> {
+                        HomeTracScreen(
+                            userName = loggedInUserName,
+                            userProfileImage = loggedInProfileImage,
+                            isIndonesian = isIndonesianLanguage,
+                            isDarkMode = isAppDarkMode,
+                            reportsList = liveReportsList,
+                            onCreateReportClick = {
+                                bannerErrorMessage = null
+                                currentScreen = Screen.CREATE_REPORT
+                            },
+                            onViewAllReportsClick = {
+                                currentScreen = Screen.REPORT_LIST
+                            },
+                            onReportsTabClick = {
+                                currentScreen = Screen.REPORT_LIST
+                            },
+                            onReportItemClick = { reportData ->
+                                selectedReport = reportData
+                                previousScreen = Screen.HOME
+                                currentScreen = Screen.REPORT_DETAIL
+                            },
+                            onNotificationClick = {
+                                currentScreen = Screen.NOTIFICATIONS
+                            },
+                            onLogoutClick = {
+                                isSidebarOpen = true
+                            }
+                        )
+                    }
+
+                    Screen.REPORT_LIST -> {
+                        ReportListTracScreen(
+                            reportsList = liveReportsList,
+                            isIndonesian = isIndonesianLanguage,
+                            isDarkMode = isAppDarkMode,
+                            onBackClick = {
+                                currentScreen = Screen.HOME
+                            },
+                            onHomeTabClick = {
+                                currentScreen = Screen.HOME
+                            },
+                            onCreateReportClick = {
+                                bannerErrorMessage = null
+                                currentScreen = Screen.CREATE_REPORT
+                            },
+                            onReportItemClick = { reportData ->
+                                selectedReport = reportData
+                                previousScreen = Screen.REPORT_LIST
+                                currentScreen = Screen.REPORT_DETAIL
+                            },
+                            onLogoutClick = {
+                                isSidebarOpen = true
+                            }
+                        )
+                    }
+
+                    Screen.REPORT_DETAIL -> {
+                        ReportDetailTracScreen(
+                            reportData = selectedReport,
+                            isIndonesian = isIndonesianLanguage,
+                            isDarkMode = isAppDarkMode,
+                            onBackClick = {
+                                currentScreen = previousScreen
+                            },
+                            onHomeTabClick = {
+                                currentScreen = Screen.HOME
+                            },
+                            onReportsTabClick = {
+                                currentScreen = Screen.REPORT_LIST
+                            },
+                            onCreateReportClick = {
+                                bannerErrorMessage = null
+                                currentScreen = Screen.CREATE_REPORT
+                            },
+                            onLogoutClick = {
+                                isSidebarOpen = true
+                            }
+                        )
+                    }
+
+                    Screen.CREATE_REPORT -> {
+                        CreateReportTracScreen(
+                            isLoading = reportUiState is ReportUiState.Loading,
+                            errorMessage = bannerErrorMessage,
+                            isIndonesian = isIndonesianLanguage,
+                            isDarkMode = isAppDarkMode,
+                            onBackClick = {
+                                currentScreen = Screen.HOME
+                            },
+                            onHomeTabClick = {
+                                currentScreen = Screen.HOME
+                            },
+                            onReportsTabClick = {
+                                currentScreen = Screen.REPORT_LIST
+                            },
+                            onSubmitReportClick = { category, location, title, desc, imageUrl ->
+                                bannerErrorMessage = null
+                                reportViewModel.createReport(category, location, title, desc, imageUrl)
+                            },
+                            onLogoutClick = {
+                                isSidebarOpen = true
+                            }
+                        )
+                    }
+
+                    Screen.NOTIFICATIONS -> {
+                        NotificationsTracScreen(
+                            isIndonesian = isIndonesianLanguage,
+                            isDarkMode = isAppDarkMode,
+                            onNotificationItemClick = { notifItem ->
+                                val matchingReport = liveReportsList.find {
+                                    it.id == notifItem.reportId || it.title.contains(notifItem.title.substringBefore(" "), ignoreCase = true)
+                                } ?: liveReportsList.firstOrNull()
+
+                                if (matchingReport != null) {
+                                    selectedReport = matchingReport
+                                }
+                                previousScreen = Screen.NOTIFICATIONS
+                                currentScreen = Screen.REPORT_DETAIL
+                            }
+                        )
+                    }
+
+                    Screen.EDIT_IDENTITY -> {
+                        EditIdentityTracScreen(
+                            currentName = loggedInUserName,
+                            currentClass = loggedInUserClass,
+                            currentRole = "Siswa / Pelapor",
+                            currentProfileImage = loggedInProfileImage,
+                            isIndonesian = isIndonesianLanguage,
+                            isDarkMode = isAppDarkMode,
+                            onBackClick = {
+                                currentScreen = Screen.HOME
+                            },
+                            onUpdateIdentityClick = { newName, newClass, newImage ->
+                                authViewModel.updateProfile(newName, newClass, newImage)
+                                loggedInUserName = newName
+                                loggedInUserClass = newClass
+                                if (!newImage.isNullOrBlank()) {
+                                    loggedInProfileImage = newImage
+                                }
+                                Toast.makeText(context, "Identitas berhasil diperbarui!", Toast.LENGTH_SHORT).show()
+                                currentScreen = Screen.HOME
+                            }
+                        )
+                    }
+
+                    Screen.SETTINGS -> {
+                        SettingsTracScreen(
+                            userName = loggedInUserName,
+                            userEmail = authViewModel.getLoggedInUserEmail(),
+                            userProfileImage = loggedInProfileImage,
+                            isIndonesianInitial = isIndonesianLanguage,
+                            isDarkModeInitial = isAppDarkMode,
+                            onBackClick = {
+                                currentScreen = Screen.HOME
+                            },
+                            onLanguageChange = { isIndo ->
+                                isIndonesianLanguage = isIndo
+                                sessionPrefs.saveLanguage(isIndo)
+                            },
+                            onThemeChange = { isDark ->
+                                isAppDarkMode = isDark
+                                sessionPrefs.saveDarkMode(isDark)
+                            },
+                            onLogoutClick = {
+                                authViewModel.logout()
+                                currentScreen = Screen.SPLASH
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Right-Edge Swipe Gesture Detection Zone (Only far-right edge 35dp)
+            if (showBottomBar && !isSidebarOpen) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(35.dp)
+                        .fillMaxHeight()
+                        .pointerInput(Unit) {
+                            detectHorizontalDragGestures { _, dragAmount ->
+                                if (dragAmount < -15f) {
+                                    isSidebarOpen = true
+                                }
+                            }
+                        }
+                )
+            }
+
+            // Fixed Stationary Bottom Navigation Bar
+            if (showBottomBar) {
+                TracBottomNavBar(
+                    currentScreen = currentScreen,
+                    isIndonesian = isIndonesianLanguage,
+                    isDarkMode = isAppDarkMode,
+                    onTabSelected = { newScreen ->
+                        bannerErrorMessage = null
+                        if (newScreen == Screen.HOME || newScreen == Screen.REPORT_LIST) {
+                            reportViewModel.fetchReports()
+                        }
+                        currentScreen = newScreen
+                    },
+                    onCreateReportClick = {
+                        bannerErrorMessage = null
+                        currentScreen = Screen.CREATE_REPORT
+                    },
+                    onProfileClick = {
+                        isSidebarOpen = true
+                    },
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+
+            // Right-Side Profile Sidebar Drawer
+            ProfileSidebarDrawer(
+                isOpen = isSidebarOpen,
+                userName = loggedInUserName,
+                userClass = loggedInUserClass,
+                userRole = "Siswa / Pelapor",
+                userProfileImage = loggedInProfileImage,
+                isIndonesian = isIndonesianLanguage,
+                isDarkMode = isAppDarkMode,
+                currentScreen = currentScreen,
+                onClose = { isSidebarOpen = false },
+                onMenuItemClick = { menuItem ->
+                    when (menuItem) {
+                        SidebarMenuItem.HOME -> currentScreen = Screen.HOME
+                        SidebarMenuItem.CREATE_REPORT -> currentScreen = Screen.CREATE_REPORT
+                        SidebarMenuItem.MY_REPORTS, SidebarMenuItem.HISTORY -> currentScreen = Screen.REPORT_LIST
+                        SidebarMenuItem.PROFILE -> currentScreen = Screen.EDIT_IDENTITY
+                        SidebarMenuItem.SETTINGS -> currentScreen = Screen.SETTINGS
+                    }
+                },
+                onLogoutClick = {
+                    authViewModel.logout()
+                    currentScreen = Screen.SPLASH
+                }
+            )
         }
     }
 }
