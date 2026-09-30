@@ -5,10 +5,46 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
-import java.io.InputStream
 
 object ImageUtils {
+
+    fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+        val height = options.outHeight
+        val width = options.outWidth
+        var inSampleSize = 1
+
+        if (height > reqHeight || width > reqWidth) {
+            val halfHeight = height / 2
+            val halfWidth = width / 2
+
+            while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        return inSampleSize
+    }
+
+    fun decodeSampledBitmapFromUri(context: Context, uri: Uri, reqWidth: Int = 800, reqHeight: Int = 800): Bitmap? {
+        return runCatching {
+            val options = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, options)
+            }
+
+            options.inSampleSize = calculateInSampleSize(options, reqWidth, reqHeight)
+            options.inJustDecodeBounds = false
+
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, options)
+            }
+        }.getOrNull()
+    }
+
     fun bitmapToBase64(bitmap: Bitmap, quality: Int = 75): String {
         val maxDimension = 600
         val width = bitmap.width
@@ -31,22 +67,21 @@ object ImageUtils {
         return "data:image/jpeg;base64," + Base64.encodeToString(byteArray, Base64.NO_WRAP)
     }
 
+    suspend fun bitmapToBase64Async(bitmap: Bitmap, quality: Int = 75): String = withContext(Dispatchers.Default) {
+        bitmapToBase64(bitmap, quality)
+    }
+
     fun uriToBase64(context: Context, uri: Uri): String? {
-        return runCatching {
-            val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
-            val originalBitmap = BitmapFactory.decodeStream(inputStream)
-            inputStream?.close()
-            originalBitmap?.let { bitmapToBase64(it) }
-        }.getOrNull()
+        val bitmap = decodeSampledBitmapFromUri(context, uri, 800, 800) ?: return null
+        return bitmapToBase64(bitmap)
+    }
+
+    suspend fun uriToBase64Async(context: Context, uri: Uri): String? = withContext(Dispatchers.IO) {
+        uriToBase64(context, uri)
     }
 
     fun uriToBitmap(context: Context, uri: Uri): Bitmap? {
-        return runCatching {
-            val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
-            val bitmap = BitmapFactory.decodeStream(inputStream)
-            inputStream?.close()
-            bitmap
-        }.getOrNull()
+        return decodeSampledBitmapFromUri(context, uri, 800, 800)
     }
 
     fun base64ToBitmap(base64Str: String): Bitmap? {
@@ -61,3 +96,4 @@ object ImageUtils {
         }.getOrNull()
     }
 }
+

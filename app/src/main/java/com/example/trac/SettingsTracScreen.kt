@@ -65,17 +65,20 @@ fun SettingsTracScreen(
     userName: String = "Joshua Benjamin",
     userEmail: String = "joshua@trac.id",
     userProfileImage: String = "",
+    userRoleInitial: String = "Siswa",
     isIndonesianInitial: Boolean = false,
     isDarkModeInitial: Boolean = false,
     onBackClick: () -> Unit = {},
     onLanguageChange: (isIndonesian: Boolean) -> Unit = {},
     onThemeChange: (isDark: Boolean) -> Unit = {},
+    onRoleChange: (newRole: String) -> Unit = {},
     onLogoutClick: () -> Unit = {}
 ) {
     val isPreview = LocalInspectionMode.current
 
     var isIndonesian by rememberSaveable { mutableStateOf(isIndonesianInitial) }
     var isDarkMode by rememberSaveable { mutableStateOf(isDarkModeInitial) }
+    var currentRole by rememberSaveable { mutableStateOf(userRoleInitial) }
 
     // Dynamic Theme Colors
     val pageBg = if (isDarkMode) Color(0xFF0F172A) else Color(0xFFF8FAFD)
@@ -453,6 +456,75 @@ fun SettingsTracScreen(
                                     color = if (isDarkMode) Color(0xFF38BDF8) else textSecondary
                                 )
                             }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Section 3: STATUS AKUN & PERAN
+                Text(
+                    text = if (isIndonesian) "STATUS & PERAN AKUN" else "ACCOUNT ROLE & STATUS",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textSecondary,
+                    letterSpacing = 1.1.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .shadow(
+                            elevation = 4.dp,
+                            shape = RoundedCornerShape(20.dp),
+                            spotColor = Color(0x0D000000)
+                        ),
+                    shape = RoundedCornerShape(20.dp),
+                    color = cardBg,
+                    border = BorderStroke(1.dp, borderCol)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        val isAdminUser = userRoleInitial.contains("Admin", ignoreCase = true)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = if (isAdminUser) (if (isIndonesian) "Admin / Pengurus Fasilitas" else "Facility Administrator")
+                                    else (if (isIndonesian) "Siswa / Pelapor Terdaftar" else "Student Reporter"),
+                                    fontSize = 14.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = textPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (isAdminUser) Color(0xFF2563EB) else Color(0xFF10B981)
+                                ) {
+                                    Text(
+                                        text = if (isAdminUser) "ADMIN" else "TERVERIFIKASI",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = Color.White,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isAdminUser)
+                                    (if (isIndonesian) "Memiliki hak istimewa mengelola laporan & menugaskan staf." else "Has administrative privileges to manage reports and staff.")
+                                else
+                                    (if (isIndonesian) "Hak akses: membuat laporan & memantau status fasilitas." else "Access rights: submit reports & track facility status."),
+                                fontSize = 11.5.sp,
+                                color = textSecondary
+                            )
                         }
                     }
                 }

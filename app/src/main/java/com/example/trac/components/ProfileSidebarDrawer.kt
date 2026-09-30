@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.BorderStroke
 import com.example.trac.Screen
 import com.example.trac.util.ImageUtils
 
@@ -62,6 +63,7 @@ enum class SidebarMenuItem {
     CREATE_REPORT,
     MY_REPORTS,
     HISTORY,
+    ADMIN_PANEL,
     PROFILE,
     SETTINGS
 }
@@ -70,6 +72,7 @@ enum class SidebarIconType {
     HOME,
     CREATE_REPORT,
     MY_REPORTS,
+    ADMIN_PANEL,
     PROFILE,
     SETTINGS
 }
@@ -81,6 +84,7 @@ fun ProfileSidebarDrawer(
     userClass: String = "XI RPL",
     userRole: String = "Siswa / Pelapor",
     userProfileImage: String = "",
+    isAdmin: Boolean = false,
     isIndonesian: Boolean = false,
     isDarkMode: Boolean = false,
     currentScreen: Screen = Screen.HOME,
@@ -228,6 +232,21 @@ fun ProfileSidebarDrawer(
                                 }
                             )
 
+                            if (isAdmin) {
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                SidebarAdminNavItem(
+                                    label = if (isIndonesian) "Admin Panel" else "Admin Dashboard",
+                                    badge = "ADMIN",
+                                    isSelected = currentScreen == Screen.ADMIN_DASHBOARD,
+                                    isDarkMode = isDarkMode,
+                                    onClick = {
+                                        onMenuItemClick(SidebarMenuItem.ADMIN_PANEL)
+                                        onClose()
+                                    }
+                                )
+                            }
+
                             Spacer(modifier = Modifier.height(8.dp))
 
                             SidebarNavItem(
@@ -282,7 +301,7 @@ fun ProfileSidebarDrawer(
                                         .size(42.dp)
                                         .shadow(elevation = 4.dp, shape = CircleShape, spotColor = Color(0x202563EB))
                                         .clip(CircleShape),
-                                    color = Color(0xFFEFF6FF)
+                                    color = if (isAdmin) Color(0xFFEEF2FF) else Color(0xFFEFF6FF)
                                 ) {
                                     if (profileBitmap != null) {
                                         Image(
@@ -304,7 +323,7 @@ fun ProfileSidebarDrawer(
                                                 text = initials,
                                                 fontSize = 14.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF2563EB)
+                                                color = if (isAdmin) Color(0xFF4F46E5) else Color(0xFF2563EB)
                                             )
                                         }
                                     }
@@ -320,12 +339,64 @@ fun ProfileSidebarDrawer(
                                         color = textPrimary
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
+                                    val displayRole = if (isAdmin) {
+                                        if (isIndonesian) "Pengurus / Admin" else "Administrator"
+                                    } else {
+                                        userRole
+                                    }
                                     Text(
-                                        text = "$userRole • $userClass",
+                                        text = "$displayRole • $userClass",
                                         fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = textSecondary
+                                        fontWeight = if (isAdmin) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isAdmin) Color(0xFF4F46E5) else textSecondary
                                     )
+                                }
+                            }
+
+                            if (isAdmin) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onMenuItemClick(SidebarMenuItem.ADMIN_PANEL)
+                                            onClose()
+                                        },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isDarkMode) Color(0xFF1E1B4B).copy(alpha = 0.7f) else Color(0xFFEEF2FF),
+                                    border = BorderStroke(1.dp, if (isDarkMode) Color(0xFF4338CA) else Color(0xFFC7D2FE))
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            SidebarIcon(SidebarIconType.ADMIN_PANEL, Color(0xFF4F46E5))
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column {
+                                                Text(
+                                                    text = if (isIndonesian) "Buka Admin Hub" else "Open Admin Hub",
+                                                    fontSize = 12.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isDarkMode) Color(0xFFA5B4FC) else Color(0xFF3730A3)
+                                                )
+                                                Text(
+                                                    text = if (isIndonesian) "Kelola laporan & fasilitas" else "Manage reports & facilities",
+                                                    fontSize = 10.5.sp,
+                                                    color = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF6366F1)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "→",
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF4F46E5)
+                                        )
+                                    }
                                 }
                             }
 
@@ -474,6 +545,19 @@ private fun SidebarIcon(type: SidebarIconType, color: Color) {
                 drawLine(color = color, start = Offset(w * 0.35f, h * 0.52f), end = Offset(w * 0.65f, h * 0.52f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                 drawLine(color = color, start = Offset(w * 0.35f, h * 0.66f), end = Offset(w * 0.55f, h * 0.66f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
             }
+            SidebarIconType.ADMIN_PANEL -> {
+                val path = Path().apply {
+                    moveTo(w * 0.5f, h * 0.12f)
+                    lineTo(w * 0.85f, h * 0.28f)
+                    lineTo(w * 0.85f, h * 0.6f)
+                    cubicTo(w * 0.85f, h * 0.82f, w * 0.5f, h * 0.95f, w * 0.5f, h * 0.95f)
+                    cubicTo(w * 0.5f, h * 0.95f, w * 0.15f, h * 0.82f, w * 0.15f, h * 0.6f)
+                    lineTo(w * 0.15f, h * 0.28f)
+                    close()
+                }
+                drawPath(path, color = color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawCircle(color = color, radius = 2.5.dp.toPx(), center = Offset(w * 0.5f, h * 0.5f))
+            }
             SidebarIconType.PROFILE -> {
                 drawCircle(color = color, radius = 4.dp.toPx(), center = Offset(w * 0.5f, h * 0.32f), style = Stroke(width = 2.dp.toPx()))
                 val body = Path().apply {
@@ -485,6 +569,62 @@ private fun SidebarIcon(type: SidebarIconType, color: Color) {
             SidebarIconType.SETTINGS -> {
                 drawCircle(color = color, radius = 3.dp.toPx(), center = Offset(w * 0.5f, h * 0.5f), style = Stroke(width = 2.dp.toPx()))
                 drawCircle(color = color, radius = 7.dp.toPx(), center = Offset(w * 0.5f, h * 0.5f), style = Stroke(width = 2.dp.toPx()))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SidebarAdminNavItem(
+    label: String,
+    badge: String,
+    isSelected: Boolean,
+    isDarkMode: Boolean,
+    onClick: () -> Unit
+) {
+    val bg = if (isSelected) Color(0xFFEEF2FF) else if (isDarkMode) Color(0xFF1E1B4B).copy(alpha = 0.6f) else Color(0xFFF5F3FF)
+    val contentColor = Color(0xFF4F46E5)
+    val borderCol = if (isSelected) Color(0xFF6366F1) else Color(0xFFC7D2FE).copy(alpha = 0.5f)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable { onClick() },
+        shape = RoundedCornerShape(14.dp),
+        color = bg,
+        border = BorderStroke(1.dp, borderCol)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SidebarIcon(SidebarIconType.ADMIN_PANEL, contentColor)
+
+            Spacer(modifier = Modifier.width(16.dp))
+
+            Text(
+                text = label,
+                fontSize = 14.5.sp,
+                fontWeight = FontWeight.Bold,
+                color = contentColor,
+                modifier = Modifier.weight(1f)
+            )
+
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = Color(0xFF4F46E5)
+            ) {
+                Text(
+                    text = badge,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
             }
         }
     }

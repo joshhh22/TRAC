@@ -85,6 +85,24 @@ class ReportViewModel(
         }
     }
 
+    fun updateReportStatus(reportId: String, newStatus: String, onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            // Optimistic update so UI immediately reflects state change
+            _reports.value = _reports.value.map { r ->
+                if (r.id == reportId) r.copy(status = newStatus) else r
+            }
+
+            val result = repository.updateReportStatus(reportId, newStatus)
+            result.onSuccess {
+                fetchReports()
+                onResult(true)
+            }.onFailure {
+                // If it fails on Supabase (e.g. offline/RLS), keep the local change for smooth offline demo
+                onResult(false)
+            }
+        }
+    }
+
     fun resetState() {
         _uiState.value = ReportUiState.Idle
     }

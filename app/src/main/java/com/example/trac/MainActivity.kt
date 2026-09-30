@@ -64,16 +64,13 @@ enum class Screen {
     TERMS,
     NOTIFICATIONS,
     EDIT_IDENTITY,
-    SETTINGS
+    SETTINGS,
+    ADMIN_DASHBOARD
 }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Make status bar & navigation bar transparent
-        window.statusBarColor = android.graphics.Color.TRANSPARENT
-        window.navigationBarColor = android.graphics.Color.TRANSPARENT
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
@@ -142,6 +139,14 @@ fun TRACApp(
         mutableStateOf(authViewModel.getLoggedInUserProfileImage())
     }
 
+    var isUserAdmin by remember {
+        mutableStateOf(authViewModel.isUserAdmin())
+    }
+
+    var loggedInUserRole by remember {
+        mutableStateOf(authViewModel.getLoggedInUserRole())
+    }
+
     // Selected Report for Detail View
     var selectedReport by remember { mutableStateOf<ReportData?>(null) }
 
@@ -171,7 +176,7 @@ fun TRACApp(
                 currentScreen = previousScreen
             }
 
-            Screen.REPORT_LIST, Screen.CREATE_REPORT, Screen.NOTIFICATIONS, Screen.EDIT_IDENTITY, Screen.SETTINGS -> {
+            Screen.ADMIN_DASHBOARD, Screen.REPORT_LIST, Screen.CREATE_REPORT, Screen.NOTIFICATIONS, Screen.EDIT_IDENTITY, Screen.SETTINGS -> {
                 currentScreen = Screen.HOME
             }
 
@@ -194,7 +199,16 @@ fun TRACApp(
                     loggedInUserName = authViewModel.getLoggedInUserName()
                     loggedInUserClass = authViewModel.getLoggedInUserClass()
                     loggedInProfileImage = authViewModel.getLoggedInUserProfileImage()
+                    loggedInUserRole = authViewModel.getLoggedInUserRole()
+                    isUserAdmin = authViewModel.isUserAdmin()
                     reportViewModel.fetchReports()
+                    currentScreen = Screen.HOME
+                } else if (state.isProfileUpdate) {
+                    loggedInUserName = authViewModel.getLoggedInUserName()
+                    loggedInUserClass = authViewModel.getLoggedInUserClass()
+                    loggedInProfileImage = authViewModel.getLoggedInUserProfileImage()
+                    loggedInUserRole = authViewModel.getLoggedInUserRole()
+                    isUserAdmin = authViewModel.isUserAdmin()
                     currentScreen = Screen.HOME
                 } else {
                     currentScreen = Screen.LOGIN
@@ -467,20 +481,34 @@ fun TRACApp(
                             currentClass = loggedInUserClass,
                             currentRole = "Siswa / Pelapor",
                             currentProfileImage = loggedInProfileImage,
+                            isLoading = authState is AuthUiState.Loading,
                             isIndonesian = isIndonesianLanguage,
                             isDarkMode = isAppDarkMode,
                             onBackClick = {
                                 currentScreen = Screen.HOME
                             },
                             onUpdateIdentityClick = { newName, newClass, newImage ->
-                                authViewModel.updateProfile(newName, newClass, newImage)
-                                loggedInUserName = newName
-                                loggedInUserClass = newClass
-                                if (!newImage.isNullOrBlank()) {
-                                    loggedInProfileImage = newImage
+                                authViewModel.updateProfile(newName, newClass, newImage) { result ->
+                                    result.onSuccess {
+                                        loggedInUserName = newName
+                                        loggedInUserClass = newClass
+                                        if (!newImage.isNullOrBlank()) {
+                                            loggedInProfileImage = newImage
+                                        }
+                                        Toast.makeText(
+                                            context,
+                                            if (isIndonesianLanguage) "Identitas berhasil diperbarui!" else "Identity updated successfully!",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        currentScreen = Screen.HOME
+                                    }.onFailure { error ->
+                                        Toast.makeText(
+                                            context,
+                                            error.localizedMessage ?: "Gagal memperbarui identitas",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 }
-                                Toast.makeText(context, "Identitas berhasil diperbarui!", Toast.LENGTH_SHORT).show()
-                                currentScreen = Screen.HOME
                             }
                         )
                     }
@@ -490,6 +518,7 @@ fun TRACApp(
                             userName = loggedInUserName,
                             userEmail = authViewModel.getLoggedInUserEmail(),
                             userProfileImage = loggedInProfileImage,
+                            userRoleInitial = loggedInUserRole,
                             isIndonesianInitial = isIndonesianLanguage,
                             isDarkModeInitial = isAppDarkMode,
                             onBackClick = {
@@ -503,31 +532,72 @@ fun TRACApp(
                                 isAppDarkMode = isDark
                                 sessionPrefs.saveDarkMode(isDark)
                             },
+                            onRoleChange = { newRole ->
+                                authViewModel.setUserRole(newRole)
+                                loggedInUserRole = newRole
+                                isUserAdmin = authViewModel.isUserAdmin()
+                                Toast.makeText(
+                                    context,
+                                    if (isIndonesianLanguage) "Peran diubah ke: $newRole" else "Role updated to: $newRole",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
                             onLogoutClick = {
                                 authViewModel.logout()
                                 currentScreen = Screen.SPLASH
                             }
                         )
                     }
+
+                    Screen.ADMIN_DASHBOARD -> {
+                        AdminDashboardTracScreen(
+                            adminName = loggedInUserName,
+                            adminEmail = authViewModel.getLoggedInUserEmail(),
+                            isSuperAdmin = authViewModel.isSuperAdmin(),
+                            adminEmails = authViewModel.getAdminEmails(),
+                            isIndonesian = isIndonesianLanguage,
+                            isDarkMode = isAppDarkMode,
+                            reportsList = liveReportsList,
+                            selectedReportInitial = selectedReport,
+                            onBackToUserModeClick = {
+                                currentScreen = Screen.HOME
+                            },
+                            onUpdateReportStatus = { reportId, newStatus ->
+                                reportViewModel.updateReportStatus(reportId, newStatus) { success ->
+                                    if (success) {
+                                        Toast.makeText(
+                                            context,
+                                            if (isIndonesianLanguage) "Status laporan berhasil diubah ke: $newStatus" else "Report status updated to: $newStatus",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            },
+                            onToggleUserAdminRole = { targetEmail, makeAdmin ->
+                                if (makeAdmin) {
+                                    authViewModel.promoteUserToAdmin(targetEmail)
+                                    Toast.makeText(
+                                        context,
+                                        if (isIndonesianLanguage) "$targetEmail berhasil dijadikan Admin" else "$targetEmail promoted to Admin",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    authViewModel.demoteAdminToUser(targetEmail)
+                                    Toast.makeText(
+                                        context,
+                                        if (isIndonesianLanguage) "Hak Admin $targetEmail dicabut" else "Admin role revoked from $targetEmail",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                isUserAdmin = authViewModel.isUserAdmin()
+                                loggedInUserRole = authViewModel.getLoggedInUserRole()
+                            }
+                        )
+                    }
                 }
             }
 
-            // Right-Edge Swipe Gesture Detection Zone (Only far-right edge 35dp)
-            if (showBottomBar && !isSidebarOpen) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .width(35.dp)
-                        .fillMaxHeight()
-                        .pointerInput(Unit) {
-                            detectHorizontalDragGestures { _, dragAmount ->
-                                if (dragAmount < -15f) {
-                                    isSidebarOpen = true
-                                }
-                            }
-                        }
-                )
-            }
+
 
             // Fixed Stationary Bottom Navigation Bar
             if (showBottomBar) {
@@ -558,8 +628,9 @@ fun TRACApp(
                 isOpen = isSidebarOpen,
                 userName = loggedInUserName,
                 userClass = loggedInUserClass,
-                userRole = "Siswa / Pelapor",
+                userRole = if (isUserAdmin) (if (isIndonesianLanguage) "Pengurus / Admin" else "Administrator") else loggedInUserRole,
                 userProfileImage = loggedInProfileImage,
+                isAdmin = isUserAdmin,
                 isIndonesian = isIndonesianLanguage,
                 isDarkMode = isAppDarkMode,
                 currentScreen = currentScreen,
@@ -569,6 +640,13 @@ fun TRACApp(
                         SidebarMenuItem.HOME -> currentScreen = Screen.HOME
                         SidebarMenuItem.CREATE_REPORT -> currentScreen = Screen.CREATE_REPORT
                         SidebarMenuItem.MY_REPORTS, SidebarMenuItem.HISTORY -> currentScreen = Screen.REPORT_LIST
+                        SidebarMenuItem.ADMIN_PANEL -> {
+                            if (isUserAdmin) {
+                                currentScreen = Screen.ADMIN_DASHBOARD
+                            } else {
+                                Toast.makeText(context, "Akses ditolak: Hanya Admin yang dapat mengakses panel ini.", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                         SidebarMenuItem.PROFILE -> currentScreen = Screen.EDIT_IDENTITY
                         SidebarMenuItem.SETTINGS -> currentScreen = Screen.SETTINGS
                     }

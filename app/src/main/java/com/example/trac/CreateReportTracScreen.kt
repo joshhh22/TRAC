@@ -47,6 +47,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -95,6 +96,8 @@ fun CreateReportTracScreen(
 ) {
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
+    val coroutineScope = rememberCoroutineScope()
+    var isEncodingImage by remember { mutableStateOf(false) }
 
     // Dynamic Theme Colors
     val pageBg = if (isDarkMode) Color(0xFF0F172A) else Color(0xFFF8FAFD)
@@ -631,16 +634,20 @@ fun CreateReportTracScreen(
                 // Primary "+ Submit Report" Button
                 Button(
                     onClick = {
-                        if (isFormValid) {
-                            val encodedImage = when {
-                                photoBitmap != null -> ImageUtils.bitmapToBase64(photoBitmap!!)
-                                photoUri != null -> ImageUtils.uriToBase64(context, photoUri!!)
-                                else -> null
+                        if (isFormValid && !isLoading && !isEncodingImage) {
+                            coroutineScope.launch {
+                                isEncodingImage = true
+                                val encodedImage = when {
+                                    photoBitmap != null -> ImageUtils.bitmapToBase64Async(photoBitmap!!)
+                                    photoUri != null -> ImageUtils.uriToBase64Async(context, photoUri!!)
+                                    else -> null
+                                }
+                                isEncodingImage = false
+                                onSubmitReportClick(finalCategory, finalLocation, reportTitle, description, encodedImage)
                             }
-                            onSubmitReportClick(finalCategory, finalLocation, reportTitle, description, encodedImage)
                         }
                     },
-                    enabled = isFormValid && !isLoading,
+                    enabled = isFormValid && !isLoading && !isEncodingImage,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(54.dp)
@@ -658,7 +665,7 @@ fun CreateReportTracScreen(
                         disabledContentColor = Color.White.copy(alpha = 0.8f)
                     )
                 ) {
-                    if (isLoading) {
+                    if (isLoading || isEncodingImage) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(24.dp),
                             color = Color.White,

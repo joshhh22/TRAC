@@ -21,4 +21,17 @@ class ReportRepository {
             Unit
         }
     }
+
+    suspend fun updateReportStatus(reportId: String, newStatus: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            postgrest["reports"].update({
+                set("status", newStatus)
+            }) {
+                filter {
+                    eq("id", reportId)
+                }
+            }
+            Unit
+        }
+    }
 }

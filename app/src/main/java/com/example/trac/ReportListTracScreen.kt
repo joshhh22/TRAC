@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -82,20 +83,23 @@ fun ReportListTracScreen(
 
     val filterOptions = if (isIndonesian) listOf("Semua", "Menunggu", "Proses", "Selesai") else listOf("All", "Pending", "In Progress", "Completed")
 
-    // Real-Time Query Filtering
-    val filteredReports = reportsList.filter { report ->
-        val matchesQuery = report.title.contains(searchQuery, ignoreCase = true) ||
-                report.location.contains(searchQuery, ignoreCase = true) ||
-                report.category.contains(searchQuery, ignoreCase = true)
+    // Real-Time Query Filtering (memoized with remember to prevent recomputing on every recomposition)
+    val filteredReports = remember(reportsList, searchQuery, selectedFilter) {
+        reportsList.filter { report ->
+            val matchesQuery = searchQuery.isBlank() ||
+                    report.title.contains(searchQuery, ignoreCase = true) ||
+                    report.location.contains(searchQuery, ignoreCase = true) ||
+                    report.category.contains(searchQuery, ignoreCase = true)
 
-        val matchesFilter = when (selectedFilter) {
-            "Pending", "Menunggu" -> report.status.equals("Pending", ignoreCase = true)
-            "In Progress", "Proses" -> report.status.equals("In Progress", ignoreCase = true)
-            "Completed", "Selesai" -> report.status.equals("Completed", ignoreCase = true)
-            else -> true
+            val matchesFilter = when (selectedFilter) {
+                "Pending", "Menunggu" -> report.status.equals("Pending", ignoreCase = true)
+                "In Progress", "Proses" -> report.status.equals("In Progress", ignoreCase = true)
+                "Completed", "Selesai" -> report.status.equals("Completed", ignoreCase = true)
+                else -> true
+            }
+
+            matchesQuery && matchesFilter
         }
-
-        matchesQuery && matchesFilter
     }
 
     // Entrance animation states
@@ -145,7 +149,6 @@ fun ReportListTracScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(bottom = 76.dp)
-                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 22.dp, vertical = 24.dp)
         ) {
             Spacer(modifier = Modifier.height(12.dp))
@@ -288,7 +291,7 @@ fun ReportListTracScreen(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // 4. Reports List Items
+                // 4. Recycled Reports List Items using LazyColumn
                 if (filteredReports.isEmpty()) {
                     Surface(
                         modifier = Modifier
@@ -317,35 +320,41 @@ fun ReportListTracScreen(
                         }
                     }
                 } else {
-                    filteredReports.forEach { report ->
-                        val (statusBg, statusColor, iconType) = when (report.status.lowercase()) {
-                            "completed" -> Triple(Color(0xFFD1FAE5), Color(0xFF059669), ReportIconType.SUCCESS)
-                            "in progress" -> Triple(Color(0xFFFEF3C7), Color(0xFFD97706), ReportIconType.WARNING)
-                            else -> Triple(Color(0xFFF1F5F9), Color(0xFF64748B), ReportIconType.INFO)
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(
+                            items = filteredReports,
+                            key = { it.id ?: (it.title + it.location + it.createdAt) }
+                        ) { report ->
+                            val (statusBg, statusColor, iconType) = when (report.status.lowercase()) {
+                                "completed" -> Triple(Color(0xFFD1FAE5), Color(0xFF059669), ReportIconType.SUCCESS)
+                                "in progress" -> Triple(Color(0xFFFEF3C7), Color(0xFFD97706), ReportIconType.WARNING)
+                                else -> Triple(Color(0xFFF1F5F9), Color(0xFF64748B), ReportIconType.INFO)
+                            }
+
+                            val statusDisplay = when {
+                                report.status.equals("In Progress", ignoreCase = true) -> if (isIndonesian) "Proses" else "In Progress"
+                                report.status.equals("Completed", ignoreCase = true) -> if (isIndonesian) "Selesai" else "Completed"
+                                else -> if (isIndonesian) "Menunggu" else "Pending"
+                            }
+
+                            ReportCardItem(
+                                title = report.title,
+                                location = report.location,
+                                timeAgo = report.createdAt?.take(10) ?: "Baru saja",
+                                statusText = statusDisplay,
+                                statusBg = statusBg,
+                                statusColor = statusColor,
+                                iconType = iconType,
+                                cardBg = cardBg,
+                                borderCol = borderCol,
+                                textPrimary = textPrimary,
+                                textSecondary = textSecondary,
+                                onClick = { onReportItemClick(report) }
+                            )
                         }
-
-                        val statusDisplay = when {
-                            report.status.equals("In Progress", ignoreCase = true) -> if (isIndonesian) "Proses" else "In Progress"
-                            report.status.equals("Completed", ignoreCase = true) -> if (isIndonesian) "Selesai" else "Completed"
-                            else -> if (isIndonesian) "Menunggu" else "Pending"
-                        }
-
-                        ReportCardItem(
-                            title = report.title,
-                            location = report.location,
-                            timeAgo = report.createdAt?.take(10) ?: "Baru saja",
-                            statusText = statusDisplay,
-                            statusBg = statusBg,
-                            statusColor = statusColor,
-                            iconType = iconType,
-                            cardBg = cardBg,
-                            borderCol = borderCol,
-                            textPrimary = textPrimary,
-                            textSecondary = textSecondary,
-                            onClick = { onReportItemClick(report) }
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
                     }
                 }
             }

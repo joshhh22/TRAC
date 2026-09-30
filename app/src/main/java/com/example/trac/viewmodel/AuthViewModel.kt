@@ -12,7 +12,11 @@ import kotlinx.coroutines.launch
 sealed interface AuthUiState {
     object Idle : AuthUiState
     object Loading : AuthUiState
-    data class Success(val message: String, val isLoginSuccess: Boolean = false) : AuthUiState
+    data class Success(
+        val message: String,
+        val isLoginSuccess: Boolean = false,
+        val isProfileUpdate: Boolean = false
+    ) : AuthUiState
     data class Error(val message: String) : AuthUiState
 }
 
@@ -30,14 +34,53 @@ class AuthViewModel(
     fun getLoggedInUserName(): String = repository.getLoggedInUserName()
 
     fun getLoggedInUserClass(): String = repository.getLoggedInUserClass()
+ 
+    fun getLoggedInUserRole(): String = repository.getLoggedInUserRole()
+
+    fun isUserAdmin(): Boolean = repository.isUserAdmin()
+
+    fun isSuperAdmin(): Boolean = repository.isSuperAdmin()
+
+    fun promoteUserToAdmin(email: String) {
+        repository.promoteUserToAdmin(email)
+    }
+
+    fun demoteAdminToUser(email: String) {
+        repository.demoteAdminToUser(email)
+    }
+
+    fun getAdminEmails(): Set<String> = repository.getAdminEmails()
+
+    fun setUserRole(role: String) {
+        repository.setLoggedInUserRole(role)
+    }
 
     fun getLoggedInUserProfileImage(): String = repository.getLoggedInUserProfileImage()
 
     fun getLoggedInUserEmail(): String = repository.getLoggedInUserEmail()
 
-    fun updateProfile(fullName: String, userClass: String, profileImage: String? = null) {
+    fun updateProfile(
+        fullName: String,
+        userClass: String,
+        profileImage: String? = null,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            repository.updateProfileSupabase(fullName, userClass, profileImage)
+            _uiState.value = AuthUiState.Loading
+            val result = repository.updateProfileSupabase(fullName, userClass, profileImage)
+            result.onSuccess {
+                _uiState.value = AuthUiState.Success(
+                    message = "Identitas berhasil diperbarui!",
+                    isLoginSuccess = false,
+                    isProfileUpdate = true
+                )
+                onResult(result)
+            }.onFailure { error ->
+                _uiState.value = AuthUiState.Error(
+                    error.localizedMessage ?: "Gagal memperbarui identitas di server."
+                )
+                onResult(result)
+            }
         }
     }
 

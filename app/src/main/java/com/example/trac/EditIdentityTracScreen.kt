@@ -34,6 +34,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -44,6 +45,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -77,6 +79,7 @@ fun EditIdentityTracScreen(
     currentClass: String = "XI RPL",
     currentRole: String = "Siswa / Pelapor",
     currentProfileImage: String = "",
+    isLoading: Boolean = false,
     isIndonesian: Boolean = false,
     isDarkMode: Boolean = false,
     onBackClick: () -> Unit = {},
@@ -84,6 +87,8 @@ fun EditIdentityTracScreen(
 ) {
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
+    val coroutineScope = rememberCoroutineScope()
+    var isEncodingImage by remember { mutableStateOf(false) }
 
     // Dynamic Theme Colors
     val pageBg = if (isDarkMode) Color(0xFF0F172A) else Color(0xFFF8FAFD)
@@ -467,17 +472,21 @@ fun EditIdentityTracScreen(
                 // Primary Button
                 Button(
                     onClick = {
-                        if (fullName.isNotBlank() && finalClass.isNotBlank()) {
-                            val encodedImage = when {
-                                photoBitmap != null -> ImageUtils.bitmapToBase64(photoBitmap!!)
-                                photoUri != null -> ImageUtils.uriToBase64(context, photoUri!!)
-                                currentProfileImage.isNotBlank() -> currentProfileImage
-                                else -> null
+                        if (fullName.isNotBlank() && finalClass.isNotBlank() && !isLoading && !isEncodingImage) {
+                            coroutineScope.launch {
+                                isEncodingImage = true
+                                val encodedImage = when {
+                                    photoBitmap != null -> ImageUtils.bitmapToBase64Async(photoBitmap!!)
+                                    photoUri != null -> ImageUtils.uriToBase64Async(context, photoUri!!)
+                                    currentProfileImage.isNotBlank() -> currentProfileImage
+                                    else -> null
+                                }
+                                isEncodingImage = false
+                                onUpdateIdentityClick(fullName.trim(), finalClass.trim(), encodedImage)
                             }
-                            onUpdateIdentityClick(fullName.trim(), finalClass.trim(), encodedImage)
                         }
                     },
-                    enabled = fullName.isNotBlank() && finalClass.isNotBlank(),
+                    enabled = fullName.isNotBlank() && finalClass.isNotBlank() && !isLoading && !isEncodingImage,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(54.dp)
@@ -490,14 +499,24 @@ fun EditIdentityTracScreen(
                     shape = CircleShape,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFF2563EB),
-                        contentColor = Color.White
+                        contentColor = Color.White,
+                        disabledContainerColor = Color(0xFF93C5FD),
+                        disabledContentColor = Color.White.copy(alpha = 0.8f)
                     )
                 ) {
-                    Text(
-                        text = if (isIndonesian) "Simpan Identitas" else "Update Identity",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (isLoading || isEncodingImage) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = Color.White,
+                            strokeWidth = 2.5.dp
+                        )
+                    } else {
+                        Text(
+                            text = if (isIndonesian) "Simpan Identitas" else "Update Identity",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
