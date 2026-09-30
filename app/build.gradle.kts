@@ -1,8 +1,20 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     id("org.jetbrains.kotlin.plugin.serialization")
 }
+
+val localProps = Properties().apply {
+    val localPropFile = rootProject.file("local.properties")
+    if (localPropFile.exists()) {
+        FileInputStream(localPropFile).use { load(it) }
+    }
+}
+val localSupabaseUrl: String = (localProps.getProperty("SUPABASE_URL") ?: "").replace("\"", "\\\"")
+val localSupabaseAnonKey: String = (localProps.getProperty("SUPABASE_ANON_KEY") ?: "").replace("\"", "\\\"")
 
 android {
     namespace = "com.example.trac"
@@ -18,6 +30,9 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "SUPABASE_URL", "\"$localSupabaseUrl\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"$localSupabaseAnonKey\"")
     }
 
     buildTypes {
@@ -33,6 +48,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

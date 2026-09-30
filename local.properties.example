@@ -1,0 +1,5 @@
+## Local configuration template - DO NOT commit real secrets
+## Copy this file to local.properties and add your own credentials:
+# sdk.dir=C\:\\Users\\your-username\\AppData\\Local\\Android\\Sdk
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key
