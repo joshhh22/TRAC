@@ -109,6 +109,8 @@ class AuthRepository(context: Context) {
 
     fun isUserLoggedIn(): Boolean = sessionPrefs.isLoggedIn()
 
+    fun getLoggedInUserId(): String = sessionPrefs.getUserId()
+
     fun getLoggedInUserEmail(): String = sessionPrefs.getEmail()
 
     fun getLoggedInUserName(): String = sessionPrefs.getFullName()

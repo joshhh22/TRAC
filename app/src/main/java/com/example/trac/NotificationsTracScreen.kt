@@ -46,12 +46,15 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.trac.data.ReportData
+import com.example.trac.data.SessionPreferences
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -78,11 +81,15 @@ enum class NotificationIconType {
 
 @Composable
 fun NotificationsTracScreen(
+    reportsList: List<ReportData> = emptyList(),
     isIndonesian: Boolean = false,
     isDarkMode: Boolean = false,
     onNotificationItemClick: (NotificationItemData) -> Unit = {}
 ) {
     val isPreview = LocalInspectionMode.current
+    val context = LocalContext.current
+    val sessionPrefs = remember { SessionPreferences(context) }
+    var readNotificationIds by remember { mutableStateOf(sessionPrefs.getReadNotificationIds()) }
 
     // Dynamic Theme Colors
     val pageBg = if (isDarkMode) Color(0xFF0F172A) else Color(0xFFF8FAFD)
@@ -94,66 +101,82 @@ fun NotificationsTracScreen(
     var selectedFilter by rememberSaveable { mutableStateOf("All") }
     val filterOptions = if (isIndonesian) listOf("Semua", "Belum Dibaca", "Pembaruan", "Pengumuman") else listOf("All", "Unread", "Updates", "Announcements")
 
-    // Full List of Notifications
-    val notificationsList = remember {
-        mutableStateOf(
-            listOf(
+    // Dynamic list of notifications synced with user reports & announcements
+    val notifications = remember(reportsList, readNotificationIds, isIndonesian) {
+        val list = mutableListOf<NotificationItemData>()
+
+        // 1. Dynamic notifications from live reports (In Progress or Completed)
+        reportsList.filter {
+            it.status.equals("In Progress", ignoreCase = true) || it.status.equals("Completed", ignoreCase = true)
+        }.forEach { report ->
+            val isCompleted = report.status.equals("Completed", ignoreCase = true)
+            val notifId = if (isCompleted) "notif_done_${report.id ?: report.title.hashCode()}" else "notif_prog_${report.id ?: report.title.hashCode()}"
+            val isUnread = !readNotificationIds.contains(notifId)
+
+            list.add(
                 NotificationItemData(
-                    id = "1",
-                    title = if (isIndonesian) "Laporan Anda telah diperbarui" else "Your report was updated",
-                    description = if (isIndonesian) "AC tidak dingin - Unit sedang ditangani oleh teknisi perbaikan." else "AC not cooling - Unit has been flagged and is now under repair.",
-                    timeAgo = if (isIndonesian) "5 menit lalu" else "5 min ago",
-                    badgeText = if (isIndonesian) "Proses" else "In Repair",
-                    badgeBg = Color(0xFFFEF3C7),
-                    badgeColor = Color(0xFFD97706),
-                    iconType = NotificationIconType.REPAIR,
-                    isUnread = true,
+                    id = notifId,
+                    title = if (isCompleted)
+                        (if (isIndonesian) "Laporan selesai diperbaiki" else "Report completed")
+                    else
+                        (if (isIndonesian) "Laporan sedang diproses" else "Your report was updated"),
+                    description = if (isCompleted)
+                        (if (isIndonesian) "${report.title} di ${report.location} telah selesai diperbaiki dan ditutup." else "${report.title} in ${report.location} has been repaired and closed.")
+                    else
+                        (if (isIndonesian) "${report.title} di ${report.location} sedang ditangani oleh teknisi perbaikan." else "${report.title} in ${report.location} is currently being handled by technicians."),
+                    timeAgo = report.createdAt?.take(10) ?: (if (isIndonesian) "Hari ini" else "Today"),
+                    badgeText = if (isCompleted) (if (isIndonesian) "Selesai" else "Done") else (if (isIndonesian) "Proses" else "In Repair"),
+                    badgeBg = if (isCompleted) Color(0xFFD1FAE5) else Color(0xFFFEF3C7),
+                    badgeColor = if (isCompleted) Color(0xFF059669) else Color(0xFFD97706),
+                    iconType = if (isCompleted) NotificationIconType.COMPLETED else NotificationIconType.REPAIR,
+                    isUnread = isUnread,
                     category = "Updates",
-                    reportId = "TRC-403B"
-                ),
-                NotificationItemData(
-                    id = "2",
-                    title = if (isIndonesian) "Laporan selesai diperbaiki" else "Report completed",
-                    description = if (isIndonesian) "Meja rusak di Ruang 204 telah selesai diperbaiki." else "Broken table in Room 204 has been repaired and closed.",
-                    timeAgo = if (isIndonesian) "30 menit lalu" else "30 min ago",
-                    badgeText = if (isIndonesian) "Selesai" else "Done",
-                    badgeBg = Color(0xFFD1FAE5),
-                    badgeColor = Color(0xFF059669),
-                    iconType = NotificationIconType.COMPLETED,
-                    isUnread = true,
-                    category = "Updates",
-                    reportId = "TRC-403B"
-                ),
-                NotificationItemData(
-                    id = "3",
-                    title = if (isIndonesian) "Komentar baru" else "New comment",
-                    description = if (isIndonesian) "Tim Fasilitas memberikan catatan pada laporan Anda." else "Facilities Team left a note on your report #TRC-210.",
-                    timeAgo = if (isIndonesian) "1 jam lalu" else "1 hour ago",
-                    badgeText = null,
-                    iconType = NotificationIconType.COMMENT,
-                    isUnread = false,
-                    category = "Updates",
-                    reportId = "TRC-403B"
-                ),
-                NotificationItemData(
-                    id = "4",
-                    title = if (isIndonesian) "Pengumuman Sekolah" else "Announcement",
-                    description = if (isIndonesian) "Jadwal perawatan fasilitas sekolah Sabtu ini, 07:00-12:00." else "Scheduled school facility maintenance this Saturday, 07:00-12:00.",
-                    timeAgo = if (isIndonesian) "Kemarin" else "Yesterday",
-                    badgeText = "Info",
-                    badgeBg = Color(0xFFF3E8FF),
-                    badgeColor = Color(0xFF7E22CE),
-                    iconType = NotificationIconType.ANNOUNCEMENT,
-                    isUnread = false,
-                    category = "Announcements",
-                    reportId = null
+                    reportId = report.id
                 )
             )
+        }
+
+        // 2. Default initial notifications if list is sparse, plus announcements
+        val d1 = "notif_def_1"
+        list.add(
+            NotificationItemData(
+                id = d1,
+                title = if (isIndonesian) "Pusat Layanan Fasilitas TRAC" else "TRAC Facility Hub",
+                description = if (isIndonesian) "Laporan fasilitas sekolah akan langsung diteruskan ke tim teknisi." else "Facility issue reports are directly forwarded to the technician team.",
+                timeAgo = if (isIndonesian) "Hari ini" else "Today",
+                badgeText = "Info",
+                badgeBg = Color(0xFFEFF6FF),
+                badgeColor = Color(0xFF2563EB),
+                iconType = NotificationIconType.COMMENT,
+                isUnread = !readNotificationIds.contains(d1),
+                category = "Updates",
+                reportId = null
+            )
         )
+
+        // 3. School Announcement
+        val a1 = "notif_ann_1"
+        list.add(
+            NotificationItemData(
+                id = a1,
+                title = if (isIndonesian) "Pengumuman Pemeliharaan Sekolah" else "Scheduled School Maintenance",
+                description = if (isIndonesian) "Jadwal pemeliharaan dan inspeksi rutin sarana prasarana sekolah setiap Sabtu 07:00-12:00." else "Scheduled school facility maintenance this Saturday, 07:00-12:00.",
+                timeAgo = if (isIndonesian) "Kemarin" else "Yesterday",
+                badgeText = "Info",
+                badgeBg = Color(0xFFF3E8FF),
+                badgeColor = Color(0xFF7E22CE),
+                iconType = NotificationIconType.ANNOUNCEMENT,
+                isUnread = !readNotificationIds.contains(a1),
+                category = "Announcements",
+                reportId = null
+            )
+        )
+
+        list
     }
 
     // Filter Notifications Real Time
-    val filteredNotifications = notificationsList.value.filter { item ->
+    val filteredNotifications = notifications.filter { item ->
         when (selectedFilter) {
             "Unread", "Belum Dibaca" -> item.isUnread
             "Updates", "Pembaruan" -> item.category == "Updates"
@@ -238,9 +261,8 @@ fun NotificationsTracScreen(
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF2563EB),
                     modifier = Modifier.clickable {
-                        notificationsList.value = notificationsList.value.map {
-                            it.copy(isUnread = false)
-                        }
+                        sessionPrefs.markAllNotificationsAsRead(notifications.map { it.id })
+                        readNotificationIds = sessionPrefs.getReadNotificationIds()
                     }
                 )
             }
@@ -332,9 +354,8 @@ fun NotificationsTracScreen(
                             textPrimary = textPrimary,
                             textSecondary = textSecondary,
                             onClick = {
-                                notificationsList.value = notificationsList.value.map {
-                                    if (it.id == item.id) it.copy(isUnread = false) else it
-                                }
+                                sessionPrefs.markNotificationAsRead(item.id)
+                                readNotificationIds = sessionPrefs.getReadNotificationIds()
                                 onNotificationItemClick(item)
                             }
                         )
@@ -342,6 +363,8 @@ fun NotificationsTracScreen(
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(84.dp))
         }
     }
 }

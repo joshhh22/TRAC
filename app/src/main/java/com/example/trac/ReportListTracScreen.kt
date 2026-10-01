@@ -40,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -51,6 +52,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +63,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun ReportListTracScreen(
     reportsList: List<ReportData> = emptyList(),
+    currentUserId: String = "",
+    currentUserName: String = "",
     isIndonesian: Boolean = false,
     isDarkMode: Boolean = false,
     onBackClick: () -> Unit = {},
@@ -80,12 +84,18 @@ fun ReportListTracScreen(
 
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var selectedFilter by rememberSaveable { mutableStateOf("All") }
+    var reportScope by rememberSaveable { mutableStateOf("ALL") }
 
     val filterOptions = if (isIndonesian) listOf("Semua", "Menunggu", "Proses", "Selesai") else listOf("All", "Pending", "In Progress", "Completed")
 
-    // Real-Time Query Filtering (memoized with remember to prevent recomputing on every recomposition)
-    val filteredReports = remember(reportsList, searchQuery, selectedFilter) {
+    // Real-Time Query & Scope Filtering
+    val filteredReports = remember(reportsList, searchQuery, selectedFilter, reportScope, currentUserId, currentUserName) {
         reportsList.filter { report ->
+            val matchesScope = if (reportScope == "MY_REPORTS") {
+                (currentUserId.isNotBlank() && report.userId == currentUserId) ||
+                (currentUserName.isNotBlank() && report.userName.equals(currentUserName, ignoreCase = true))
+            } else true
+
             val matchesQuery = searchQuery.isBlank() ||
                     report.title.contains(searchQuery, ignoreCase = true) ||
                     report.location.contains(searchQuery, ignoreCase = true) ||
@@ -98,8 +108,11 @@ fun ReportListTracScreen(
                 else -> true
             }
 
-            matchesQuery && matchesFilter
-        }
+            matchesScope && matchesQuery && matchesFilter
+        }.sortedWith(
+            compareByDescending<ReportData> { it.createdAt ?: "" }
+                .thenByDescending { it.id ?: "" }
+        )
     }
 
     // Entrance animation states
@@ -250,7 +263,60 @@ fun ReportListTracScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // 2.5 Scope Toggle: Semua Laporan vs Laporan Saya
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            color = if (isDarkMode) Color(0xFF1E293B) else Color(0xFFEFF6FF),
+                            shape = RoundedCornerShape(14.dp)
+                        )
+                        .padding(4.dp)
+                ) {
+                    val isAll = reportScope == "ALL"
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(if (isAll) Color(0xFF2563EB) else Color.Transparent)
+                            .clickable { reportScope = "ALL" }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (isIndonesian) "Semua Laporan" else "All Reports",
+                            fontSize = 12.5.sp,
+                            fontWeight = if (isAll) FontWeight.ExtraBold else FontWeight.SemiBold,
+                            color = if (isAll) Color.White else textSecondary
+                        )
+                    }
+
+                    val isMine = reportScope == "MY_REPORTS"
+                    val myCount = reportsList.count {
+                        (currentUserId.isNotBlank() && it.userId == currentUserId) ||
+                        (currentUserName.isNotBlank() && it.userName.equals(currentUserName, ignoreCase = true))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(if (isMine) Color(0xFF2563EB) else Color.Transparent)
+                            .clickable { reportScope = "MY_REPORTS" }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (isIndonesian) "Laporan Saya ($myCount)" else "My Reports ($myCount)",
+                            fontSize = 12.5.sp,
+                            fontWeight = if (isMine) FontWeight.ExtraBold else FontWeight.SemiBold,
+                            color = if (isMine) Color.White else textSecondary
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // 3. Filter Category Chips
                 LazyRow(
@@ -322,7 +388,8 @@ fun ReportListTracScreen(
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(bottom = 88.dp)
                     ) {
                         items(
                             items = filteredReports,
@@ -344,10 +411,13 @@ fun ReportListTracScreen(
                                 title = report.title,
                                 location = report.location,
                                 timeAgo = report.createdAt?.take(10) ?: "Baru saja",
+                                priority = report.priority,
+                                upvoteCount = report.upvoteCount,
                                 statusText = statusDisplay,
                                 statusBg = statusBg,
                                 statusColor = statusColor,
                                 iconType = iconType,
+                                isIndonesian = isIndonesian,
                                 cardBg = cardBg,
                                 borderCol = borderCol,
                                 textPrimary = textPrimary,
@@ -373,10 +443,13 @@ private fun ReportCardItem(
     title: String,
     location: String,
     timeAgo: String,
+    priority: String,
+    upvoteCount: Int,
     statusText: String,
     statusBg: Color,
     statusColor: Color,
     iconType: ReportIconType,
+    isIndonesian: Boolean,
     cardBg: Color,
     borderCol: Color,
     textPrimary: Color,
@@ -425,20 +498,71 @@ private fun ReportCardItem(
 
                 Spacer(modifier = Modifier.width(14.dp))
 
-                Column {
-                    Text(
-                        text = title,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = textPrimary
-                    )
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = title,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (priority.equals("Darurat", ignoreCase = true) || priority.equals("High", ignoreCase = true)) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFFEE2E2)
+                            ) {
+                                Text(
+                                    text = if (isIndonesian) "DARURAT" else "EMERGENCY",
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = Color(0xFFDC2626),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                )
+                            }
+                        } else if (priority.equals("Rendah", ignoreCase = true) || priority.equals("Low", ignoreCase = true)) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFDCFCE7)
+                            ) {
+                                Text(
+                                    text = if (isIndonesian) "RENDAH" else "LOW",
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF16A34A),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = "$location • $timeAgo",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textSecondary
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "$location • $timeAgo",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (upvoteCount > 0) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "👍 $upvoteCount",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF2563EB)
+                            )
+                        }
+                    }
                 }
             }
 

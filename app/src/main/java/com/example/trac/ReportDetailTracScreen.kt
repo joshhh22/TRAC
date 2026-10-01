@@ -89,6 +89,7 @@ fun ReportDetailTracScreen(
     estCompletion: String = "22 Sep 2026",
     isIndonesian: Boolean = false,
     isDarkMode: Boolean = false,
+    onUpvoteClick: (reportId: String) -> Unit = {},
     onBackClick: () -> Unit = {},
     onHomeTabClick: () -> Unit = {},
     onReportsTabClick: () -> Unit = {},
@@ -110,6 +111,9 @@ fun ReportDetailTracScreen(
     val displayDescription = reportData?.description ?: descriptionText
     val displayStatus = reportData?.status ?: statusText
     val displayDate = reportData?.createdAt?.take(10) ?: reportDate
+    val displayPriority = reportData?.priority ?: "Sedang"
+
+    var hasUpvotedLocally by remember(reportData?.id) { mutableStateOf(false) }
 
     var commentsList by remember(reportData?.id) {
         mutableStateOf<List<CommentData>>(emptyList())
@@ -199,41 +203,65 @@ fun ReportDetailTracScreen(
 
                     Text(
                         text = "${if (isIndonesian) "Laporan" else "Report"} #${reportData?.id?.take(8) ?: reportId}",
-                        fontSize = 18.sp,
+                        fontSize = 17.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = textPrimary
                     )
                 }
 
-                // Status Badge
-                val statusDisplay = when {
-                    displayStatus.equals("In Progress", ignoreCase = true) -> if (isIndonesian) "Proses" else "In Progress"
-                    displayStatus.equals("Completed", ignoreCase = true) -> if (isIndonesian) "Selesai" else "Completed"
-                    else -> if (isIndonesian) "Menunggu" else "Pending"
-                }
-
-                Box(
-                    modifier = Modifier
-                        .background(
-                            when (displayStatus.lowercase()) {
-                                "completed" -> Color(0xFFD1FAE5)
-                                "in progress" -> Color(0xFFFEF3C7)
-                                else -> Color(0xFFF1F5F9)
-                            },
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                // Priority & Status Badges
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = statusDisplay,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = when (displayStatus.lowercase()) {
-                            "completed" -> Color(0xFF059669)
-                            "in progress" -> Color(0xFFD97706)
-                            else -> Color(0xFF64748B)
-                        }
-                    )
+                    val (pColor, pBg) = when (displayPriority.lowercase()) {
+                        "darurat" -> Color(0xFFEF4444) to Color(0xFFFEE2E2)
+                        "rendah" -> Color(0xFF10B981) to Color(0xFFD1FAE5)
+                        else -> Color(0xFFF59E0B) to Color(0xFFFEF3C7)
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .background(pBg, shape = RoundedCornerShape(12.dp))
+                            .padding(horizontal = 9.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = displayPriority.uppercase(),
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = pColor
+                        )
+                    }
+
+                    val statusDisplay = when {
+                        displayStatus.equals("In Progress", ignoreCase = true) -> if (isIndonesian) "Proses" else "In Progress"
+                        displayStatus.equals("Completed", ignoreCase = true) -> if (isIndonesian) "Selesai" else "Completed"
+                        else -> if (isIndonesian) "Menunggu" else "Pending"
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                when (displayStatus.lowercase()) {
+                                    "completed" -> Color(0xFFD1FAE5)
+                                    "in progress" -> Color(0xFFFEF3C7)
+                                    else -> Color(0xFFF1F5F9)
+                                },
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = statusDisplay,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = when (displayStatus.lowercase()) {
+                                "completed" -> Color(0xFF059669)
+                                "in progress" -> Color(0xFFD97706)
+                                else -> Color(0xFF64748B)
+                            }
+                        )
+                    }
                 }
             }
 
@@ -303,7 +331,74 @@ fun ReportDetailTracScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // "Saya Juga Mengalami" (+1 Upvote) Interactive Card
+                val totalUpvotes = (reportData?.upvoteCount ?: 0) + (if (hasUpvotedLocally) 1 else 0)
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .shadow(2.dp, RoundedCornerShape(16.dp), spotColor = Color(0x0A000000))
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable(enabled = !hasUpvotedLocally) {
+                            hasUpvotedLocally = true
+                            reportData?.id?.let { onUpvoteClick(it) }
+                        },
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (hasUpvotedLocally) Color(0xFFEFF6FF) else cardBg,
+                    border = BorderStroke(1.dp, if (hasUpvotedLocally) Color(0xFF2563EB) else borderCol)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(text = "👍", fontSize = 20.sp)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = if (isIndonesian) "Saya Juga Mengalami Ini" else "I Experience This Too",
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (hasUpvotedLocally) Color(0xFF1D4ED8) else textPrimary
+                                )
+                                Text(
+                                    text = if (hasUpvotedLocally) {
+                                        if (isIndonesian) "Dukunganmu tercatat! Menambah urgensi perbaikan." else "Your support was recorded! Raised fix priority."
+                                    } else {
+                                        if (isIndonesian) "Klik jika kamu juga terganggu oleh fasilitas ini" else "Tap if you're also affected by this facility"
+                                    },
+                                    fontSize = 11.5.sp,
+                                    color = textSecondary
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    if (hasUpvotedLocally) Color(0xFF2563EB) else Color(0xFFF1F5F9),
+                                    shape = CircleShape
+                                )
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "+$totalUpvotes",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = if (hasUpvotedLocally) Color.White else textPrimary
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // Progress Stepper Card
                 Surface(
@@ -395,6 +490,150 @@ fun ReportDetailTracScreen(
                     }
                 }
 
+                // Bukti Penyelesaian (Before vs After) Card
+                if (displayStatus.equals("Completed", ignoreCase = true)) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .shadow(
+                                elevation = 4.dp,
+                                shape = RoundedCornerShape(18.dp),
+                                spotColor = Color(0x0D000000)
+                            ),
+                        shape = RoundedCornerShape(18.dp),
+                        color = cardBg,
+                        border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.5f))
+                    ) {
+                        Column(modifier = Modifier.padding(18.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(text = "✨", fontSize = 16.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isIndonesian) "Bukti Penyelesaian (Before & After)" else "Completion Proof (Before & After)",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF059669)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                // Before photo
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (isIndonesian) "Sebelum (Laporan):" else "Before (Report):",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = textSecondary
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(110.dp)
+                                            .clip(RoundedCornerShape(12.dp)),
+                                        color = Color(0xFFE2E8F0)
+                                    ) {
+                                        val beforeBitmap = remember(reportData?.imageUrl) {
+                                            if (!reportData?.imageUrl.isNullOrBlank()) {
+                                                ImageUtils.base64ToBitmap(reportData.imageUrl)
+                                            } else null
+                                        }
+                                        if (beforeBitmap != null) {
+                                            Image(
+                                                bitmap = beforeBitmap.asImageBitmap(),
+                                                contentDescription = "Before Photo",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                                Text(if (isIndonesian) "Foto Awal" else "Initial Photo", fontSize = 11.sp, color = textSecondary)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // After photo
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (isIndonesian) "Sesudah (Selesai):" else "After (Completed):",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF059669)
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(110.dp)
+                                            .clip(RoundedCornerShape(12.dp)),
+                                        color = Color(0xFFDCFCE7)
+                                    ) {
+                                        val afterBitmap = remember(reportData?.completionImageUrl) {
+                                            if (!reportData?.completionImageUrl.isNullOrBlank()) {
+                                                ImageUtils.base64ToBitmap(reportData.completionImageUrl)
+                                            } else null
+                                        }
+                                        if (afterBitmap != null) {
+                                            Image(
+                                                bitmap = afterBitmap.asImageBitmap(),
+                                                contentDescription = "After Photo",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                                Text(if (isIndonesian) "✓ Terverifikasi Selesai" else "✓ Verified Complete", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF059669))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!reportData?.completionNotes.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0xFFF0FDF4),
+                                    border = BorderStroke(1.dp, Color(0xFFBBF7D0))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Text(text = "📝", fontSize = 14.sp)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column {
+                                            Text(
+                                                text = if (isIndonesian) "Catatan Petugas / Teknisi:" else "Technician / Staff Notes:",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF166534)
+                                            )
+                                            Text(
+                                                text = reportData.completionNotes ?: "",
+                                                fontSize = 12.sp,
+                                                color = Color(0xFF14532D),
+                                                lineHeight = 16.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Description Card
@@ -464,6 +703,28 @@ fun ReportDetailTracScreen(
                             iconColor = Color(0xFF2563EB),
                             label = if (isIndonesian) "Kategori" else "Category",
                             value = displayCategory,
+                            iconType = DetailIconType.TAG,
+                            textPrimary = textPrimary,
+                            textSecondary = textSecondary
+                        )
+
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 12.dp),
+                            color = borderCol,
+                            thickness = 1.dp
+                        )
+
+                        val (pColor, pBg) = when (displayPriority.lowercase()) {
+                            "darurat" -> Color(0xFFEF4444) to Color(0xFFFEE2E2)
+                            "rendah" -> Color(0xFF10B981) to Color(0xFFD1FAE5)
+                            else -> Color(0xFFF59E0B) to Color(0xFFFEF3C7)
+                        }
+
+                        DetailRowItem(
+                            iconBg = pBg,
+                            iconColor = pColor,
+                            label = if (isIndonesian) "Tingkat Urgensi" else "Priority Level",
+                            value = displayPriority.uppercase(),
                             iconType = DetailIconType.TAG,
                             textPrimary = textPrimary,
                             textSecondary = textSecondary

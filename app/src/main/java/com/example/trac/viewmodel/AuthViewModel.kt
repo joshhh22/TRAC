@@ -31,6 +31,8 @@ class AuthViewModel(
 
     fun isUserLoggedIn(): Boolean = repository.isUserLoggedIn()
 
+    fun getLoggedInUserId(): String = repository.getLoggedInUserId()
+
     fun getLoggedInUserName(): String = repository.getLoggedInUserName()
 
     fun getLoggedInUserClass(): String = repository.getLoggedInUserClass()

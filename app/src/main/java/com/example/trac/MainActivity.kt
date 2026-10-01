@@ -242,6 +242,23 @@ fun TRACApp(
         }
     }
 
+    // Auto-fetch fresh reports from Supabase whenever user opens Home or Report List
+    LaunchedEffect(currentScreen) {
+        if (currentScreen == Screen.HOME || currentScreen == Screen.REPORT_LIST) {
+            reportViewModel.fetchReports()
+        }
+    }
+
+    // Dynamic unread notifications count for Bell Badge
+    val unreadNotifsCount = remember(liveReportsList, currentScreen) {
+        val readIds = sessionPrefs.getReadNotificationIds()
+        val dynamicIds = liveReportsList.filter {
+            it.status.equals("In Progress", ignoreCase = true) || it.status.equals("Completed", ignoreCase = true)
+        }.map { if (it.status.equals("Completed", ignoreCase = true)) "notif_done_${it.id ?: it.title.hashCode()}" else "notif_prog_${it.id ?: it.title.hashCode()}" }
+        val allIds = (dynamicIds + listOf("notif_def_1", "notif_ann_1")).distinct()
+        allIds.count { !readIds.contains(it) }
+    }
+
     val showBottomBar = currentScreen in listOf(
         Screen.HOME,
         Screen.REPORT_LIST,
@@ -358,6 +375,10 @@ fun TRACApp(
                             isIndonesian = isIndonesianLanguage,
                             isDarkMode = isAppDarkMode,
                             reportsList = liveReportsList,
+                            unreadNotificationCount = unreadNotifsCount,
+                            onRefreshReports = {
+                                reportViewModel.fetchReports()
+                            },
                             onCreateReportClick = {
                                 bannerErrorMessage = null
                                 currentScreen = Screen.CREATE_REPORT
@@ -385,6 +406,8 @@ fun TRACApp(
                     Screen.REPORT_LIST -> {
                         ReportListTracScreen(
                             reportsList = liveReportsList,
+                            currentUserId = authViewModel.getLoggedInUserId(),
+                            currentUserName = loggedInUserName,
                             isIndonesian = isIndonesianLanguage,
                             isDarkMode = isAppDarkMode,
                             onBackClick = {
@@ -409,10 +432,14 @@ fun TRACApp(
                     }
 
                     Screen.REPORT_DETAIL -> {
+                        val activeReport = liveReportsList.find { it.id == selectedReport?.id } ?: selectedReport
                         ReportDetailTracScreen(
-                            reportData = selectedReport,
+                            reportData = activeReport,
                             isIndonesian = isIndonesianLanguage,
                             isDarkMode = isAppDarkMode,
+                            onUpvoteClick = { reportId ->
+                                reportViewModel.upvoteReport(reportId)
+                            },
                             onBackClick = {
                                 currentScreen = previousScreen
                             },
@@ -447,9 +474,9 @@ fun TRACApp(
                             onReportsTabClick = {
                                 currentScreen = Screen.REPORT_LIST
                             },
-                            onSubmitReportClick = { category, location, title, desc, imageUrl ->
+                            onSubmitReportClick = { category, location, title, desc, imageUrl, priority ->
                                 bannerErrorMessage = null
-                                reportViewModel.createReport(category, location, title, desc, imageUrl)
+                                reportViewModel.createReport(category, location, title, desc, imageUrl, priority)
                             },
                             onLogoutClick = {
                                 isSidebarOpen = true
@@ -459,11 +486,12 @@ fun TRACApp(
 
                     Screen.NOTIFICATIONS -> {
                         NotificationsTracScreen(
+                            reportsList = liveReportsList,
                             isIndonesian = isIndonesianLanguage,
                             isDarkMode = isAppDarkMode,
                             onNotificationItemClick = { notifItem ->
                                 val matchingReport = liveReportsList.find {
-                                    it.id == notifItem.reportId || it.title.contains(notifItem.title.substringBefore(" "), ignoreCase = true)
+                                    it.id == notifItem.reportId
                                 } ?: liveReportsList.firstOrNull()
 
                                 if (matchingReport != null) {
@@ -562,16 +590,18 @@ fun TRACApp(
                             onBackToUserModeClick = {
                                 currentScreen = Screen.HOME
                             },
-                            onUpdateReportStatus = { reportId, newStatus ->
-                                reportViewModel.updateReportStatus(reportId, newStatus) { success ->
-                                    if (success) {
-                                        Toast.makeText(
-                                            context,
-                                            if (isIndonesianLanguage) "Status laporan berhasil diubah ke: $newStatus" else "Report status updated to: $newStatus",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
+                            onUpdateReportStatus = { reportId, newStatus, completionImg, completionNote ->
+                                reportViewModel.updateReportStatus(reportId, newStatus, completionImg, completionNote)
+                                val statusLabel = when (newStatus.lowercase()) {
+                                    "completed", "selesai" -> if (isIndonesianLanguage) "Selesai (Bukti Terlampir)" else "Resolved (Proof Attached)"
+                                    "in progress", "diproses" -> if (isIndonesianLanguage) "Sedang Diproses" else "In Progress"
+                                    else -> if (isIndonesianLanguage) "Menunggu (Pending)" else "Pending"
                                 }
+                                Toast.makeText(
+                                    context,
+                                    if (isIndonesianLanguage) "Status laporan berhasil diubah: $statusLabel" else "Report status updated: $statusLabel",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             },
                             onToggleUserAdminRole = { targetEmail, makeAdmin ->
                                 if (makeAdmin) {

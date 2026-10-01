@@ -66,9 +66,24 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
+import com.example.trac.data.FacilityLocation
 import com.example.trac.data.ReportData
+import com.example.trac.data.SchoolFacilityMasterData
 import com.example.trac.data.SessionPreferences
+import com.example.trac.data.StaffMember
 import com.example.trac.util.ImageUtils
+import kotlinx.coroutines.launch
 
 enum class AdminSubTab {
     DASHBOARD,
@@ -80,15 +95,6 @@ enum class AdminSubTab {
     ADMIN_NOTIF
 }
 
-data class StaffMember(
-    val id: String,
-    val name: String,
-    val role: String,
-    val phone: String,
-    val activeTasks: Int,
-    val isAvailable: Boolean
-)
-
 data class StudentReporter(
     val id: String,
     val name: String,
@@ -96,14 +102,6 @@ data class StudentReporter(
     val email: String,
     val totalReports: Int,
     val resolvedReports: Int
-)
-
-data class FacilityLocation(
-    val floorName: String,
-    val floorDesc: String,
-    val roomCount: Int,
-    val activeReportsCount: Int,
-    val rooms: List<String>
 )
 
 data class AdminNotifItem(
@@ -127,7 +125,7 @@ fun AdminDashboardTracScreen(
     reportsList: List<ReportData> = emptyList(),
     selectedReportInitial: ReportData? = null,
     onBackToUserModeClick: () -> Unit = {},
-    onUpdateReportStatus: (reportId: String, newStatus: String) -> Unit = { _, _ -> },
+    onUpdateReportStatus: (reportId: String, newStatus: String, completionImageUrl: String?, completionNotes: String?) -> Unit = { _, _, _, _ -> },
     onToggleUserAdminRole: (email: String, shouldBeAdmin: Boolean) -> Unit = { _, _ -> }
 ) {
     // Dynamic Theme Tokens matching standard TRAC visual system
@@ -145,18 +143,15 @@ fun AdminDashboardTracScreen(
     if (selectedReport == null && reportsList.isNotEmpty()) {
         selectedReport = reportsList.first()
     }
+    val currentSelectedReport = reportsList.find { it.id == selectedReport?.id } ?: selectedReport
 
-    // Mock initial staff directory
-    var staffList by remember {
-        mutableStateOf(
-            listOf(
-                StaffMember("STF-01", "Pak Joko Widodo", "Teknisi Kelistrikan & Lampu", "0812-3456-7890", 3, true),
-                StaffMember("STF-02", "Pak Bambang Pamungkas", "Teknisi AC & Pendingin Ruangan", "0813-8877-6655", 2, true),
-                StaffMember("STF-03", "Ibu Siti Khadijah", "Koordinator Fasilitas & Sanitasi", "0819-2233-4455", 1, true),
-                StaffMember("STF-04", "Mas Fajar Pratama", "Teknisi IT, Lab & Jaringan", "0857-1122-3344", 4, false),
-                StaffMember("STF-05", "Pak Rudi Hartono", "Staff Sarpras & Perabot Sipil", "0821-9988-7766", 0, true)
-            )
-        )
+    val context = LocalContext.current
+    val sessionPrefs = remember { SessionPreferences(context) }
+    var staffList by remember { mutableStateOf(sessionPrefs.getStaffList()) }
+
+    // Real school facility locations across all 4 floors
+    var facilityLocations by remember {
+        mutableStateOf(SchoolFacilityMasterData.defaultLocations)
     }
 
     // Student Reporters List
@@ -171,27 +166,121 @@ fun AdminDashboardTracScreen(
         )
     }
 
-    // Master Locations per 4 floors
-    val facilityLocations = remember {
-        listOf(
-            FacilityLocation("Lantai 1", "Lobi Utama & Kantor Administrasi", 8, 2, listOf("Lobi Utama", "Ruang Tata Usaha", "Lab Komputer 1", "Lab Komputer 2", "Toilet Barat", "Ruang UKS", "Kantin")),
-            FacilityLocation("Lantai 2", "Ruang Guru & Kelas Teori", 10, 3, listOf("Ruang Guru", "Perpustakaan Digital", "Kelas X RPL 1", "Kelas X RPL 2", "Kelas X TKJ", "Toilet Lantai 2")),
-            FacilityLocation("Lantai 3", "Kelas Kejuruan & Audio Visual", 9, 4, listOf("Kelas XI RPL", "Kelas XI TKJ", "Lab Pemrograman Mobile", "Ruang Audio Visual", "Musholla")),
-            FacilityLocation("Lantai 4", "Kelas Akhir & Pusat Jaringan IT", 7, 1, listOf("Kelas XII RPL", "Kelas XII TKJ", "Ruang Server Pusat", "Studio Multimedia", "Rooftop Garden"))
+    // Dynamic Admin Notifications synced with live reports & persistent read tracking
+    var readAdminNotifIds by remember { mutableStateOf(sessionPrefs.getReadAdminNotificationIds()) }
+
+    val adminNotifications = remember(reportsList, readAdminNotifIds, isIndonesian) {
+        val list = mutableListOf<AdminNotifItem>()
+
+        // 1. Generate real notifications from all actual reports submitted by users/students
+        reportsList.forEach { report ->
+            val isUrgent = report.priority.equals("Darurat", ignoreCase = true) || report.priority.equals("Emergency", ignoreCase = true)
+            val isCompleted = report.status.equals("Completed", ignoreCase = true)
+            val idSuffix = report.id?.takeLast(6) ?: report.title.hashCode().toString()
+
+            // A. Incoming / Active Report Alert
+            val newNotifId = "admin_notif_new_$idSuffix"
+            val newTitle = if (isUrgent) {
+                if (isIndonesian) "🚨 Laporan Darurat: ${report.title}" else "🚨 Emergency Report: ${report.title}"
+            } else {
+                if (isIndonesian) "📥 Laporan Masuk: ${report.title}" else "📥 Incoming Report: ${report.title}"
+            }
+            val newDesc = if (isIndonesian) {
+                "${report.location} • Dilaporkan oleh ${report.userName ?: "Pelapor"}. Kategori ${report.category}."
+            } else {
+                "${report.location} • Reported by ${report.userName ?: "Reporter"}. Category: ${report.category}."
+            }
+
+            list.add(
+                AdminNotifItem(
+                    id = newNotifId,
+                    title = newTitle,
+                    desc = newDesc,
+                    timeAgo = report.createdAt?.take(10) ?: if (isIndonesian) "Hari ini" else "Today",
+                    isUrgent = isUrgent,
+                    isRead = readAdminNotifIds.contains(newNotifId),
+                    reportId = report.id
+                )
+            )
+
+            // B. If completed, show verified completion notice
+            if (isCompleted) {
+                val doneNotifId = "admin_notif_done_$idSuffix"
+                val doneTitle = if (isIndonesian) {
+                    "✅ Fasilitas Selesai: ${report.title}"
+                } else {
+                    "✅ Facility Resolved: ${report.title}"
+                }
+                val doneDesc = if (isIndonesian) {
+                    "${report.location} • Perbaikan telah selesai. ${if (!report.completionNotes.isNullOrBlank()) "Catatan: " + report.completionNotes else "Bukti penanganan terlampir."}"
+                } else {
+                    "${report.location} • Repair marked complete. ${if (!report.completionNotes.isNullOrBlank()) "Notes: " + report.completionNotes else "Proof verified."}"
+                }
+                list.add(
+                    AdminNotifItem(
+                        id = doneNotifId,
+                        title = doneTitle,
+                        desc = doneDesc,
+                        timeAgo = report.createdAt?.take(10) ?: if (isIndonesian) "Hari ini" else "Today",
+                        isUrgent = false,
+                        isRead = readAdminNotifIds.contains(doneNotifId),
+                        reportId = report.id
+                    )
+                )
+            }
+
+            // C. If report has multiple student upvotes
+            if (report.upvoteCount >= 2) {
+                val upvoteNotifId = "admin_notif_up_$idSuffix"
+                val upTitle = if (isIndonesian) {
+                    "🔥 +${report.upvoteCount} Siswa Terdampak: ${report.title}"
+                } else {
+                    "🔥 +${report.upvoteCount} Students Affected: ${report.title}"
+                }
+                val upDesc = if (isIndonesian) {
+                    "${report.location} • Banyak siswa menandai fasilitas ini mendesak diperbaiki."
+                } else {
+                    "${report.location} • Multiple students confirmed this issue urgently needs repair."
+                }
+                list.add(
+                    AdminNotifItem(
+                        id = upvoteNotifId,
+                        title = upTitle,
+                        desc = upDesc,
+                        timeAgo = report.createdAt?.take(10) ?: if (isIndonesian) "Hari ini" else "Today",
+                        isUrgent = true,
+                        isRead = readAdminNotifIds.contains(upvoteNotifId),
+                        reportId = report.id
+                    )
+                )
+            }
+        }
+
+        // 2. System Monitoring Welcome Card
+        val sysNotifId = "admin_notif_sys_hub"
+        list.add(
+            AdminNotifItem(
+                id = sysNotifId,
+                title = if (isIndonesian) "ℹ️ Sistem Monitoring Fasilitas TRAC" else "ℹ️ TRAC Facility Monitoring System",
+                desc = if (isIndonesian)
+                    "Notifikasi ini memantau laporan fasilitas sekolah dari siswa secara real-time. Ketuk notifikasi untuk membuka detail penugasan."
+                else
+                    "Real-time notifications for school facility reports submitted by students. Tap any notification to open report details.",
+                timeAgo = if (isIndonesian) "Hari ini" else "Today",
+                isUrgent = false,
+                isRead = readAdminNotifIds.contains(sysNotifId),
+                reportId = null
+            )
+        )
+
+        // Sort: Unread first, then urgent first
+        list.sortedWith(
+            compareBy<AdminNotifItem> { it.isRead }
+                .thenByDescending { it.isUrgent }
         )
     }
 
-    // Admin Notifications
-    var adminNotifications by remember {
-        mutableStateOf(
-            listOf(
-                AdminNotifItem("NOTIF-1", "Laporan Masuk: Stopkontak Korslet", "Lab Komputer 1 - Perlu teknisi listrik darurat.", "10 menit lalu", true, false),
-                AdminNotifItem("NOTIF-2", "Laporan Baru: AC Berisik & Bocor", "Kelas XI RPL - Suhu kelas panas mengganggu KBM.", "35 menit lalu", false, false),
-                AdminNotifItem("NOTIF-3", "Status Diperbarui oleh Teknisi", "Pak Joko telah menyelesaikan perbaikan proyektor Lab 2.", "2 jam lalu", false, true),
-                AdminNotifItem("NOTIF-4", "Laporan Selesai Diverifikasi", "Wastafel Toilet Lantai 2 telah normal kembali.", "1 hari lalu", false, true)
-            )
-        )
-    }
+    val unreadAdminNotifCount = adminNotifications.count { !it.isRead }
 
     // Metrics counters
     val totalCount = reportsList.size
@@ -223,6 +312,7 @@ fun AdminDashboardTracScreen(
                 currentTab = currentTab,
                 isIndonesian = isIndonesian,
                 isDarkMode = isDarkMode,
+                unreadNotifCount = unreadAdminNotifCount,
                 onTabSelect = { currentTab = it }
             )
 
@@ -271,8 +361,8 @@ fun AdminDashboardTracScreen(
                             borderCol = borderCol,
                             textPrimary = textPrimary,
                             textSecondary = textSecondary,
-                            onUpdateStatus = { reportId, newStatus ->
-                                onUpdateReportStatus(reportId, newStatus)
+                            onUpdateStatus = { reportId, newStatus, completionImg, completionNote ->
+                                onUpdateReportStatus(reportId, newStatus, completionImg, completionNote)
                             },
                             onOpenDetail = { report ->
                                 selectedReport = report
@@ -283,7 +373,7 @@ fun AdminDashboardTracScreen(
 
                     AdminSubTab.REPORT_DETAIL -> {
                         AdminReportDetailView(
-                            report = selectedReport,
+                            report = currentSelectedReport,
                             staffList = staffList,
                             isIndonesian = isIndonesian,
                             isDarkMode = isDarkMode,
@@ -291,9 +381,13 @@ fun AdminDashboardTracScreen(
                             borderCol = borderCol,
                             textPrimary = textPrimary,
                             textSecondary = textSecondary,
-                            onUpdateStatus = { reportId, newStatus ->
-                                onUpdateReportStatus(reportId, newStatus)
-                                selectedReport = selectedReport?.copy(status = newStatus)
+                            onUpdateStatus = { reportId, newStatus, completionImg, completionNote ->
+                                onUpdateReportStatus(reportId, newStatus, completionImg, completionNote)
+                                selectedReport = selectedReport?.copy(
+                                    status = newStatus,
+                                    completionImageUrl = completionImg ?: selectedReport?.completionImageUrl,
+                                    completionNotes = completionNote ?: selectedReport?.completionNotes
+                                )
                             },
                             onBackToReports = { currentTab = AdminSubTab.REPORTS }
                         )
@@ -313,6 +407,21 @@ fun AdminDashboardTracScreen(
                                 staffList = staffList.map {
                                     if (it.id == staffId) it.copy(activeTasks = it.activeTasks + 1) else it
                                 }
+                                sessionPrefs.saveStaffList(staffList)
+                            },
+                            onAddStaff = { newStaff ->
+                                staffList = staffList + newStaff
+                                sessionPrefs.saveStaffList(staffList)
+                            },
+                            onDeleteStaff = { staffId ->
+                                staffList = staffList.filterNot { it.id == staffId }
+                                sessionPrefs.saveStaffList(staffList)
+                            },
+                            onToggleStaffAvailability = { staffId ->
+                                staffList = staffList.map {
+                                    if (it.id == staffId) it.copy(isAvailable = !it.isAvailable) else it
+                                }
+                                sessionPrefs.saveStaffList(staffList)
                             }
                         )
                     }
@@ -343,7 +452,27 @@ fun AdminDashboardTracScreen(
                             cardBg = cardBg,
                             borderCol = borderCol,
                             textPrimary = textPrimary,
-                            textSecondary = textSecondary
+                            textSecondary = textSecondary,
+                            onAddRoomToFloor = { floorName, roomName ->
+                                facilityLocations = facilityLocations.map { loc ->
+                                    if (loc.floorName.equals(floorName, ignoreCase = true) && !loc.rooms.contains(roomName)) {
+                                        loc.copy(
+                                            rooms = loc.rooms + roomName,
+                                            roomCount = loc.rooms.size + 1
+                                        )
+                                    } else loc
+                                }
+                            },
+                            onDeleteRoomFromFloor = { floorName, roomName ->
+                                facilityLocations = facilityLocations.map { loc ->
+                                    if (loc.floorName.equals(floorName, ignoreCase = true)) {
+                                        loc.copy(
+                                            rooms = loc.rooms.filterNot { it.equals(roomName, ignoreCase = true) },
+                                            roomCount = maxOf(0, loc.rooms.size - 1)
+                                        )
+                                    } else loc
+                                }
+                            }
                         )
                     }
 
@@ -357,9 +486,12 @@ fun AdminDashboardTracScreen(
                             textPrimary = textPrimary,
                             textSecondary = textSecondary,
                             onMarkAllRead = {
-                                adminNotifications = adminNotifications.map { it.copy(isRead = true) }
+                                sessionPrefs.markAllAdminNotificationsAsRead(adminNotifications.map { it.id })
+                                readAdminNotifIds = sessionPrefs.getReadAdminNotificationIds()
                             },
                             onNotificationClick = { notif ->
+                                sessionPrefs.markAdminNotificationAsRead(notif.id)
+                                readAdminNotifIds = sessionPrefs.getReadAdminNotificationIds()
                                 val matchedReport = reportsList.find { it.id == notif.reportId }
                                 if (matchedReport != null) {
                                     selectedReport = matchedReport
@@ -392,94 +524,109 @@ private fun AdminTopBar(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(elevation = 3.dp, spotColor = Color(0x15000000)),
+            .shadow(elevation = 2.dp, spotColor = Color(0x12000000)),
         color = cardBg,
         border = BorderStroke(1.dp, borderCol)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // TRAC Brand Shield Icon Badge
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .background(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(Color(0xFF2563EB), Color(0xFF1D4ED8))
-                            ),
-                            shape = RoundedCornerShape(12.dp)
+            // TRAC Brand Shield Icon Badge
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .background(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(Color(0xFF2563EB), Color(0xFF1D4ED8))
                         ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AdminShieldCrownIcon(color = Color.White, size = 22.dp)
-                }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = if (isIndonesian) "Panel Admin & Pengurus" else "Admin & Facility Hub",
-                            fontSize = 15.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = textPrimary
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = Color(0xFF2563EB)
-                        ) {
-                            Text(
-                                text = if (isSuperAdmin) "ADMIN UTAMA" else "ADMIN",
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Black,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    Text(
-                        text = if (isIndonesian) "TRAC Fasilitas Sekolah • $adminName" else "School Facility Management • $adminName",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textSecondary
-                    )
-                }
+                        shape = RoundedCornerShape(10.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                AdminShieldCrownIcon(color = Color.White, size = 20.dp)
             }
 
-            // Button: Back to Reporter Mode ("Mode Pelapor")
+            Spacer(modifier = Modifier.width(10.dp))
+
+            // Main Info Column with weight(1f) to prevent squeezing the right button
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (isIndonesian) "Panel Admin" else "Admin Hub",
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color(0xFF2563EB)
+                    ) {
+                        Text(
+                            text = if (isIndonesian) {
+                                if (isSuperAdmin) "ADMIN UTAMA" else "ADMIN"
+                            } else {
+                                if (isSuperAdmin) "SUPER ADMIN" else "ADMIN"
+                            },
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(2.dp))
+
+                Text(
+                    text = if (isIndonesian) "Fasilitas TRAC • $adminName" else "School Facilities • $adminName",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Button: Back to Reporter Mode
             Surface(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(10.dp))
                     .clickable { onBackToUserMode() },
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(10.dp),
                 color = if (isDarkMode) Color(0xFF1E293B) else Color(0xFFEFF6FF),
                 border = BorderStroke(1.dp, Color(0xFF2563EB).copy(alpha = 0.4f))
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = "←",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF2563EB)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (isIndonesian) "Mode Pelapor" else "Reporter Mode",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF2563EB)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (isIndonesian) "Mode Pelapor" else "Reporter Mode",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF2563EB),
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -495,16 +642,17 @@ private fun AdminSubTabRow(
     currentTab: AdminSubTab,
     isIndonesian: Boolean,
     isDarkMode: Boolean,
+    unreadNotifCount: Int = 0,
     onTabSelect: (AdminSubTab) -> Unit
 ) {
     val tabs = listOf(
-        AdminSubTab.DASHBOARD to (if (isIndonesian) "Dashboard" else "Dashboard"),
+        AdminSubTab.DASHBOARD to (if (isIndonesian) "Dasbor" else "Dashboard"),
         AdminSubTab.REPORTS to (if (isIndonesian) "Laporan" else "Reports"),
-        AdminSubTab.REPORT_DETAIL to (if (isIndonesian) "Report Detail" else "Report Detail"),
-        AdminSubTab.ASSIGN_STAFF to (if (isIndonesian) "Assign Staff" else "Assign Staff"),
-        AdminSubTab.USERS_PELAPOR to (if (isIndonesian) "Users Pelapor" else "Student Users"),
-        AdminSubTab.CATEGORIES_LOCATIONS to (if (isIndonesian) "Categories-locations" else "Categories-locations"),
-        AdminSubTab.ADMIN_NOTIF to (if (isIndonesian) "Admin Notif" else "Admin Notif")
+        AdminSubTab.REPORT_DETAIL to (if (isIndonesian) "Detail Laporan" else "Report Detail"),
+        AdminSubTab.ASSIGN_STAFF to (if (isIndonesian) "Tugaskan Staf" else "Assign Staff"),
+        AdminSubTab.USERS_PELAPOR to (if (isIndonesian) "Daftar Pelapor" else "Reporters"),
+        AdminSubTab.CATEGORIES_LOCATIONS to (if (isIndonesian) "Kategori & Lokasi" else "Categories & Rooms"),
+        AdminSubTab.ADMIN_NOTIF to (if (isIndonesian) "Notifikasi" else "Notifications")
     )
 
     Surface(
@@ -544,6 +692,21 @@ private fun AdminSubTabRow(
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                             color = textColor
                         )
+                        if (tab == AdminSubTab.ADMIN_NOTIF && unreadNotifCount > 0) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = CircleShape,
+                                color = if (isSelected) Color.White else Color(0xFFEF4444)
+                            ) {
+                                Text(
+                                    text = "$unreadNotifCount",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = if (isSelected) Color(0xFF2563EB) else Color.White,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -759,6 +922,7 @@ private fun AdminDashboardView(
             reportsList.take(4).forEach { report ->
                 AdminCompactReportCard(
                     report = report,
+                    isIndonesian = isIndonesian,
                     cardBg = cardBg,
                     borderCol = borderCol,
                     textPrimary = textPrimary,
@@ -783,11 +947,28 @@ private fun AdminReportsListView(
     borderCol: Color,
     textPrimary: Color,
     textSecondary: Color,
-    onUpdateStatus: (reportId: String, newStatus: String) -> Unit,
+    onUpdateStatus: (reportId: String, newStatus: String, completionImageUrl: String?, completionNotes: String?) -> Unit,
     onOpenDetail: (ReportData) -> Unit
 ) {
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var selectedFilter by rememberSaveable { mutableStateOf("All") }
+
+    var reportToResolve by remember { mutableStateOf<ReportData?>(null) }
+    var completionNotesInput by remember { mutableStateOf("") }
+    var completionImageBase64 by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                val base64 = ImageUtils.uriToBase64(context, uri)
+                completionImageBase64 = base64
+            }
+        }
+    }
 
     val filteredList = remember(reportsList, searchQuery, selectedFilter) {
         reportsList.filter { report ->
@@ -928,13 +1109,123 @@ private fun AdminReportsListView(
                         textPrimary = textPrimary,
                         textSecondary = textSecondary,
                         onUpdateStatus = { newStatus ->
-                            report.id?.let { onUpdateStatus(it, newStatus) }
+                            report.id?.let { onUpdateStatus(it, newStatus, null, null) }
+                        },
+                        onOpenResolveDialog = {
+                            reportToResolve = report
+                            completionNotesInput = report.completionNotes ?: ""
+                            completionImageBase64 = report.completionImageUrl
                         },
                         onOpenDetail = { onOpenDetail(report) }
                     )
                 }
             }
         }
+    }
+
+    // Resolution & Proof Dialog for Reports List (ensuring proof prompt is NEVER bypassed)
+    if (reportToResolve != null) {
+        val target = reportToResolve!!
+        AlertDialog(
+            onDismissRequest = { reportToResolve = null },
+            containerColor = cardBg,
+            title = {
+                Text(
+                    text = if (isIndonesian) "Selesaikan Laporan & Bukti Perbaikan" else "Resolve Report & Add Proof",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = textPrimary
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = if (isIndonesian)
+                            "Selesaikan #${target.id?.takeLast(5) ?: "TRAC"}: '${target.title}'. Masukkan catatan perbaikan dan foto bukti setelah penanganan:"
+                        else
+                            "Resolve #${target.id?.takeLast(5) ?: "TRAC"}: '${target.title}'. Add technician notes and completion proof photo:",
+                        fontSize = 12.sp,
+                        color = textSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = completionNotesInput,
+                        onValueChange = { completionNotesInput = it },
+                        label = { Text(if (isIndonesian) "Catatan Perbaikan" else "Resolution Notes", fontSize = 12.sp) },
+                        placeholder = { Text(if (isIndonesian) "Contoh: Sudah diperbaiki dan dites berfungsi normal." else "E.g. Repaired and tested working.", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 3,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = textPrimary,
+                            unfocusedTextColor = textPrimary
+                        )
+                    )
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(90.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                imagePickerLauncher.launch("image/*")
+                            },
+                        color = if (isDarkMode) Color(0xFF334155) else Color(0xFFF1F5F9),
+                        border = BorderStroke(1.dp, borderCol)
+                    ) {
+                        val compImg = completionImageBase64
+                        if (compImg != null) {
+                            val bmp = remember(compImg) {
+                                ImageUtils.base64ToBitmap(compImg)
+                            }
+                            if (bmp != null) {
+                                Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = "Completion Proof",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        } else {
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(text = "📷", fontSize = 20.sp)
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (isIndonesian) "Pilih Foto Bukti Selesai (Opsional)" else "Pick After Photo (Optional)",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF2563EB)
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        target.id?.let {
+                            onUpdateStatus(it, "Completed", completionImageBase64, completionNotesInput.trim())
+                        }
+                        reportToResolve = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                ) {
+                    Text(if (isIndonesian) "Simpan & Selesai" else "Mark Resolved", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { reportToResolve = null }) {
+                    Text(if (isIndonesian) "Batal" else "Cancel", color = textSecondary, fontSize = 12.sp)
+                }
+            }
+        )
     }
 }
 
@@ -951,7 +1242,7 @@ private fun AdminReportDetailView(
     borderCol: Color,
     textPrimary: Color,
     textSecondary: Color,
-    onUpdateStatus: (reportId: String, newStatus: String) -> Unit,
+    onUpdateStatus: (reportId: String, newStatus: String, completionImageUrl: String?, completionNotes: String?) -> Unit,
     onBackToReports: () -> Unit
 ) {
     if (report == null) {
@@ -978,6 +1269,23 @@ private fun AdminReportDetailView(
 
     var currentStatus by remember(report.status) { mutableStateOf(report.status) }
     var selectedStaffName by remember { mutableStateOf(staffList.firstOrNull()?.name ?: "Tim Fasilitas") }
+
+    var showCompletionDialog by remember { mutableStateOf(false) }
+    var completionNotesInput by remember(report.id) { mutableStateOf(report.completionNotes ?: "") }
+    var completionImageBase64 by remember(report.id) { mutableStateOf<String?>(report.completionImageUrl) }
+    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                val base64 = ImageUtils.uriToBase64(context, uri)
+                completionImageBase64 = base64
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -1025,17 +1333,81 @@ private fun AdminReportDetailView(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Status Changer Banner
+        // 1. Current Active Status Hero Banner
+        val isCompletedStatus = currentStatus.equals("Completed", ignoreCase = true)
+        val isInProgressStatus = currentStatus.equals("In Progress", ignoreCase = true)
+        
+        val heroBg = when {
+            isCompletedStatus -> if (isDarkMode) Color(0xFF064E3B).copy(alpha = 0.6f) else Color(0xFFECFDF5)
+            isInProgressStatus -> if (isDarkMode) Color(0xFF1E3A8A).copy(alpha = 0.6f) else Color(0xFFEFF6FF)
+            else -> if (isDarkMode) Color(0xFF78350F).copy(alpha = 0.5f) else Color(0xFFFFFBEB)
+        }
+        val heroBorder = when {
+            isCompletedStatus -> Color(0xFF10B981)
+            isInProgressStatus -> Color(0xFF2563EB)
+            else -> Color(0xFFF59E0B)
+        }
+        val heroIcon = when {
+            isCompletedStatus -> "✅"
+            isInProgressStatus -> "⚙️"
+            else -> "⏳"
+        }
+        val heroTitle = when {
+            isCompletedStatus -> if (isIndonesian) "STATUS: SELESAI DIPERBAIKI" else "STATUS: RESOLVED & VERIFIED"
+            isInProgressStatus -> if (isIndonesian) "STATUS: SEDANG DIPROSES" else "STATUS: UNDER REPAIR / IN PROGRESS"
+            else -> if (isIndonesian) "STATUS: MENUNGGU PENANGANAN" else "STATUS: PENDING ACTION"
+        }
+        val heroSubtitle = when {
+            isCompletedStatus -> if (isIndonesian) "Perbaikan fasilitas telah rampung. Bukti penyelesaian tersimpan di bawah." else "Facility repair complete. Proof and resolution notes attached below."
+            isInProgressStatus -> if (isIndonesian) "Teknisi sedang melakukan perbaikan di lokasi fasilitas." else "Technicians are currently on-site working on this facility."
+            else -> if (isIndonesian) "Laporan tercatat dan sedang menunggu penugasan teknisi." else "Report recorded and awaiting technician dispatch."
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            color = heroBg,
+            border = BorderStroke(1.5.dp, heroBorder)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = heroIcon, fontSize = 28.sp)
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = heroTitle,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (isDarkMode) Color.White else Color(0xFF0F172A)
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = heroSubtitle,
+                        fontSize = 11.5.sp,
+                        color = if (isDarkMode) Color(0xFFCBD5E1) else Color(0xFF475569),
+                        lineHeight = 15.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // 2. Interactive Status Control Selector (3 Clear Option Cards)
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
             color = cardBg,
             border = BorderStroke(1.dp, borderCol)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(14.dp)) {
                 Text(
-                    text = if (isIndonesian) "Ubah Status Pengerjaan (Admin Control):" else "Change Progress Status (Admin Control):",
-                    fontSize = 12.5.sp,
+                    text = if (isIndonesian) "Ganti Status Laporan (Pilih salah satu):" else "Change Progress Status (Select one):",
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     color = textSecondary
                 )
@@ -1046,45 +1418,68 @@ private fun AdminReportDetailView(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val statuses = listOf("Pending", "In Progress", "Completed")
-                    statuses.forEach { st ->
-                        val isCurrent = currentStatus.equals(st, ignoreCase = true)
-                        val btnBg = when (st) {
-                            "Pending" -> if (isCurrent) Color(0xFFD97706) else Color(0xFFFEF3C7)
-                            "In Progress" -> if (isCurrent) Color(0xFF2563EB) else Color(0xFFEFF6FF)
-                            else -> if (isCurrent) Color(0xFF10B981) else Color(0xFFDCFCE7)
-                        }
-                        val btnText = if (isCurrent) Color.White else when (st) {
-                            "Pending" -> Color(0xFFB45309)
-                            "In Progress" -> Color(0xFF1D4ED8)
-                            else -> Color(0xFF15803D)
-                        }
+                    val statusOptions = listOf(
+                        Triple("Pending", if (isIndonesian) "Menunggu" else "Pending", Color(0xFFD97706)),
+                        Triple("In Progress", if (isIndonesian) "Diproses" else "In Progress", Color(0xFF2563EB)),
+                        Triple("Completed", if (isIndonesian) "Selesai" else "Resolved", Color(0xFF10B981))
+                    )
 
+                    statusOptions.forEach { (stKey, stLabel, accentCol) ->
+                        val isCurrent = currentStatus.equals(stKey, ignoreCase = true)
                         Surface(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(10.dp))
                                 .clickable {
-                                    currentStatus = st
-                                    report.id?.let { onUpdateStatus(it, st) }
+                                    if (stKey == "Completed") {
+                                        completionNotesInput = report.completionNotes ?: ""
+                                        completionImageBase64 = report.completionImageUrl
+                                        showCompletionDialog = true
+                                    } else {
+                                        currentStatus = stKey
+                                        report.id?.let { onUpdateStatus(it, stKey, null, null) }
+                                    }
                                 },
                             shape = RoundedCornerShape(10.dp),
-                            color = btnBg
+                            color = if (isCurrent) accentCol else (if (isDarkMode) Color(0xFF1E293B) else Color(0xFFF8FAFC)),
+                            border = BorderStroke(
+                                width = if (isCurrent) 2.dp else 1.dp,
+                                color = if (isCurrent) accentCol else borderCol
+                            )
                         ) {
-                            Box(
-                                modifier = Modifier.padding(vertical = 10.dp),
-                                contentAlignment = Alignment.Center
+                            Column(
+                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    text = when (st) {
-                                        "Pending" -> if (isIndonesian) "Menunggu" else "Pending"
-                                        "In Progress" -> if (isIndonesian) "Diproses" else "In Progress"
-                                        else -> if (isIndonesian) "Selesai" else "Resolved"
+                                    text = when (stKey) {
+                                        "Pending" -> "⏳"
+                                        "In Progress" -> "⚙️"
+                                        else -> "✅"
                                     },
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = btnText
+                                    fontSize = 16.sp
                                 )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = stLabel,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isCurrent) Color.White else textPrimary,
+                                    maxLines = 1
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = if (isCurrent) Color.White.copy(alpha = 0.25f) else Color.Transparent
+                                ) {
+                                    Text(
+                                        text = if (isCurrent) (if (isIndonesian) "AKTIF ✓" else "ACTIVE ✓") else (if (isIndonesian) "Pilih" else "Tap"),
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (isCurrent) Color.White else textSecondary,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1118,6 +1513,17 @@ private fun AdminReportDetailView(
                     CategoryPill(category = report.category)
                     Spacer(modifier = Modifier.width(8.dp))
                     LocationPill(location = report.location)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    AdminPriorityBadge(priority = report.priority, isIndonesian = isIndonesian)
+                    if (report.upvoteCount > 0) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "👍 +${report.upvoteCount}",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF2563EB)
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -1128,21 +1534,35 @@ private fun AdminReportDetailView(
 
                 DetailItemRow(
                     label = if (isIndonesian) "Nama Pelapor" else "Reporter",
-                    value = report.userName ?: "Pelapor TRAC",
+                    value = report.userName ?: if (isIndonesian) "Pelapor TRAC" else "TRAC Reporter",
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary
+                )
+
+                DetailItemRow(
+                    label = if (isIndonesian) "Prioritas / Urgensi" else "Priority Level",
+                    value = when (report.priority.lowercase()) {
+                        "darurat", "emergency" -> if (isIndonesian) "DARURAT" else "EMERGENCY"
+                        "rendah", "low" -> if (isIndonesian) "RENDAH" else "LOW"
+                        "tinggi", "high" -> if (isIndonesian) "TINGGI" else "HIGH"
+                        else -> if (isIndonesian) "SEDANG" else "MEDIUM"
+                    },
                     textPrimary = textPrimary,
                     textSecondary = textSecondary
                 )
 
                 DetailItemRow(
                     label = if (isIndonesian) "Waktu Laporan" else "Reported At",
-                    value = report.createdAt ?: "Hari ini",
+                    value = report.createdAt ?: if (isIndonesian) "Hari ini" else "Today",
                     textPrimary = textPrimary,
                     textSecondary = textSecondary
                 )
 
                 DetailItemRow(
                     label = if (isIndonesian) "Petugas Ditugaskan" else "Assigned Staff",
-                    value = selectedStaffName,
+                    value = if (selectedStaffName == "Tim Fasilitas") {
+                        if (isIndonesian) "Tim Fasilitas" else "School Facility Team"
+                    } else selectedStaffName,
                     textPrimary = textPrimary,
                     textSecondary = textSecondary
                 )
@@ -1169,7 +1589,7 @@ private fun AdminReportDetailView(
                 if (!report.imageUrl.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(14.dp))
                     Text(
-                        text = if (isIndonesian) "Foto Bukti Fasilitas:" else "Attached Photo Evidence:",
+                        text = if (isIndonesian) "Foto Bukti Fasilitas (Sebelum):" else "Initial Photo (Before):",
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = textSecondary
@@ -1190,7 +1610,158 @@ private fun AdminReportDetailView(
                         )
                     }
                 }
+
+                // Render Before & After Proof section if completed
+                if (currentStatus.equals("Completed", ignoreCase = true) && (!report.completionImageUrl.isNullOrBlank() || !report.completionNotes.isNullOrBlank())) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    HorizontalDivider(color = borderCol)
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = if (isIndonesian) "✨ Bukti Selesai Diperbaiki (After):" else "✨ Completion Proof (After):",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF059669)
+                    )
+
+                    if (!report.completionImageUrl.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        val completionBmp = remember(report.completionImageUrl) {
+                            ImageUtils.base64ToBitmap(report.completionImageUrl)
+                        }
+                        if (completionBmp != null) {
+                            Image(
+                                bitmap = completionBmp.asImageBitmap(),
+                                contentDescription = "Completion Proof",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                        }
+                    }
+
+                    if (!report.completionNotes.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFF0FDF4),
+                            border = BorderStroke(1.dp, Color(0xFFBBF7D0))
+                        ) {
+                            Text(
+                                text = "📝 ${report.completionNotes}",
+                                fontSize = 12.5.sp,
+                                color = Color(0xFF166534),
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+                }
             }
+        }
+
+        // Completion Dialog
+        if (showCompletionDialog) {
+            AlertDialog(
+                onDismissRequest = { showCompletionDialog = false },
+                containerColor = cardBg,
+                title = {
+                    Text(
+                        text = if (isIndonesian) "Selesaikan Laporan & Bukti Perbaikan" else "Resolve Report & Add Proof",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = textPrimary
+                    )
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = if (isIndonesian) "Tambahkan catatan penanganan teknisi serta foto bukti setelah selesai diperbaiki:" else "Add technician handling notes and optional completion photo:",
+                            fontSize = 12.sp,
+                            color = textSecondary
+                        )
+
+                        OutlinedTextField(
+                            value = completionNotesInput,
+                            onValueChange = { completionNotesInput = it },
+                            label = { Text(if (isIndonesian) "Catatan Perbaikan" else "Resolution Notes", fontSize = 12.sp) },
+                            placeholder = { Text(if (isIndonesian) "Contoh: Komponen rusak telah diganti dan dites normal." else "E.g. Repaired and tested working.", fontSize = 12.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 3,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = textPrimary,
+                                unfocusedTextColor = textPrimary
+                            )
+                        )
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(90.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    imagePickerLauncher.launch("image/*")
+                                },
+                            color = if (isDarkMode) Color(0xFF334155) else Color(0xFFF1F5F9),
+                            border = BorderStroke(1.dp, borderCol)
+                        ) {
+                            val compImg = completionImageBase64
+                            if (compImg != null) {
+                                val bmp = remember(compImg) {
+                                    ImageUtils.base64ToBitmap(compImg)
+                                }
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(),
+                                        contentDescription = "Completion Proof",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            } else {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Text(text = "📷", fontSize = 20.sp)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = if (isIndonesian) "Pilih Foto Bukti Selesai (Opsional)" else "Pick After Photo (Optional)",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF2563EB)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            currentStatus = "Completed"
+                            report.id?.let {
+                                onUpdateStatus(it, "Completed", completionImageBase64, completionNotesInput.trim())
+                            }
+                            showCompletionDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                    ) {
+                        Text(if (isIndonesian) "Simpan & Selesai" else "Mark Resolved", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCompletionDialog = false }) {
+                        Text(if (isIndonesian) "Batal" else "Cancel", color = textSecondary, fontSize = 12.sp)
+                    }
+                }
+            )
         }
 
         Spacer(modifier = Modifier.height(14.dp))
@@ -1242,7 +1813,7 @@ private fun AdminReportDetailView(
                             color = if (isAssigned) Color(0xFF2563EB) else if (isDarkMode) Color(0xFF334155) else Color(0xFFF1F5F9)
                         ) {
                             Text(
-                                text = if (isAssigned) "Ditugaskan ✓" else "Pilih",
+                                text = if (isAssigned) (if (isIndonesian) "Ditugaskan ✓" else "Assigned ✓") else (if (isIndonesian) "Pilih" else "Select"),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isAssigned) Color.White else textSecondary,
@@ -1269,33 +1840,113 @@ private fun AdminAssignStaffView(
     borderCol: Color,
     textPrimary: Color,
     textSecondary: Color,
-    onAssignStaff: (staffId: String, reportId: String) -> Unit
+    onAssignStaff: (staffId: String, reportId: String) -> Unit,
+    onAddStaff: (StaffMember) -> Unit = {},
+    onDeleteStaff: (staffId: String) -> Unit = {},
+    onToggleStaffAvailability: (staffId: String) -> Unit = {}
 ) {
+    val context = LocalContext.current
+    var showAddStaffDialog by remember { mutableStateOf(false) }
+    var staffToDelete by remember { mutableStateOf<StaffMember?>(null) }
+
+    var newName by remember { mutableStateOf("") }
+    var newRole by remember { mutableStateOf("") }
+    var newPhone by remember { mutableStateOf("") }
+
+    val roleSuggestions = listOf(
+        "Teknisi Kelistrikan & Lampu",
+        "Teknisi AC & Pendingin",
+        "Staff Sarpras & Perabot Sipil",
+        "Teknisi IT & Jaringan",
+        "Koordinator Fasilitas & Sanitasi"
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        Text(
-            text = if (isIndonesian) "Manajemen Staf & Teknisi Fasilitas" else "Facility Staff & Technician Management",
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            color = textPrimary
-        )
+        // Header with Add Staff button
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (isIndonesian) "Manajemen Staf & Teknisi" else "Facility Staff Management",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textPrimary
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (isIndonesian)
+                        "${staffList.size} staf teknisi terdaftar di sekolah"
+                    else
+                        "${staffList.size} school technicians registered",
+                    fontSize = 11.5.sp,
+                    color = textSecondary
+                )
+            }
 
-        Spacer(modifier = Modifier.height(4.dp))
+            Surface(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable {
+                        newName = ""
+                        newRole = ""
+                        newPhone = ""
+                        showAddStaffDialog = true
+                    },
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF2563EB)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    PlusVectorIcon(color = Color.White, size = 13.dp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (isIndonesian) "+ Tambah Staf" else "+ Add Staff",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
+        }
 
-        Text(
-            text = if (isIndonesian)
-                "Daftar teknisi yang bertanggung jawab menangani pemeliharaan sarana prasarana sekolah."
-            else
-                "List of technicians responsible for maintaining school facilities and equipment.",
-            fontSize = 12.sp,
-            color = textSecondary
-        )
+        Spacer(modifier = Modifier.height(14.dp))
 
-        Spacer(modifier = Modifier.height(16.dp))
+        if (staffList.isEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = cardBg,
+                border = BorderStroke(1.dp, borderCol)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = if (isIndonesian) "Belum ada staf terdaftar" else "No staff members registered",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textPrimary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (isIndonesian) "Klik tombol '+ Tambah Staf' di atas untuk menambahkan teknisi sekolah Anda." else "Tap '+ Add Staff' above to register your school technicians.",
+                        fontSize = 11.5.sp,
+                        color = textSecondary
+                    )
+                }
+            }
+        }
 
         staffList.forEach { staff ->
             Surface(
@@ -1309,7 +1960,7 @@ private fun AdminAssignStaffView(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
+                        .padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -1319,7 +1970,7 @@ private fun AdminAssignStaffView(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .size(42.dp)
                                 .background(
                                     color = if (staff.isAvailable) Color(0xFFEFF6FF) else Color(0xFFFEF3C7),
                                     shape = CircleShape
@@ -1328,65 +1979,260 @@ private fun AdminAssignStaffView(
                         ) {
                             StaffWrenchIcon(
                                 color = if (staff.isAvailable) Color(0xFF2563EB) else Color(0xFFD97706),
-                                size = 22.dp
+                                size = 20.dp
                             )
                         }
 
-                        Spacer(modifier = Modifier.width(14.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
 
                         Column {
                             Text(
                                 text = staff.name,
-                                fontSize = 14.5.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = textPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = staff.role,
-                                fontSize = 11.5.sp,
+                                fontSize = 11.sp,
                                 color = textSecondary
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Surface(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable { onToggleStaffAvailability(staff.id) },
                                     shape = RoundedCornerShape(4.dp),
                                     color = if (staff.isAvailable) Color(0xFFDCFCE7) else Color(0xFFFEF3C7)
                                 ) {
                                     Text(
                                         text = if (staff.isAvailable) (if (isIndonesian) "Siap Bertugas" else "Available") else (if (isIndonesian) "Sedang Bertugas" else "Busy"),
-                                        fontSize = 10.sp,
+                                        fontSize = 9.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = if (staff.isAvailable) Color(0xFF15803D) else Color(0xFFB45309),
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "${staff.activeTasks} " + if (isIndonesian) "tugas aktif" else "tasks",
-                                    fontSize = 11.sp,
+                                    text = "${staff.activeTasks} " + if (isIndonesian) "tugas" else "tasks",
+                                    fontSize = 10.5.sp,
                                     color = textSecondary
                                 )
                             }
                         }
                     }
 
-                    // Contact / Phone action
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = Color(0xFF2563EB)
-                    ) {
-                        Text(
-                            text = "WhatsApp",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        )
+                    // Contact / WhatsApp & Delete actions
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    val cleanPhone = staff.phone.replace("-", "").replace(" ", "").replace("+", "")
+                                    val waNumber = if (cleanPhone.startsWith("0")) "62" + cleanPhone.substring(1) else cleanPhone
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$waNumber"))
+                                    runCatching { context.startActivity(intent) }
+                                },
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF2563EB)
+                        ) {
+                            Text(
+                                text = "WhatsApp",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        // Delete button
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { staffToDelete = staff },
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFFEF2F2),
+                            border = BorderStroke(1.dp, Color(0xFFFCA5A5))
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                TrashVectorIcon(color = Color(0xFFEF4444), size = 15.dp)
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    // Dialog: Tambah Staf Baru
+    if (showAddStaffDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddStaffDialog = false },
+            title = {
+                Text(
+                    text = if (isIndonesian) "Tambah Staf / Teknisi Baru" else "Add New Staff Member",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        text = if (isIndonesian) "Nama Lengkap Staf:" else "Staff Full Name:",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        placeholder = { Text("Contoh: Pak Joko Widodo", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = if (isIndonesian) "Peran / Bidang Tanggung Jawab:" else "Role / Responsibility:",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = newRole,
+                        onValueChange = { newRole = it },
+                        placeholder = { Text("Contoh: Teknisi Kelistrikan & Lampu", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = if (isIndonesian) "Pilihan Cepat Bidang:" else "Quick Suggestions:",
+                        fontSize = 10.5.sp,
+                        color = textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        roleSuggestions.forEach { role ->
+                            val isSel = newRole == role
+                            Surface(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { newRole = role },
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isSel) Color(0xFF2563EB) else Color(0xFFEFF6FF)
+                            ) {
+                                Text(
+                                    text = role.substringBefore(" &"),
+                                    fontSize = 10.5.sp,
+                                    color = if (isSel) Color.White else Color(0xFF2563EB),
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = if (isIndonesian) "Nomor WhatsApp / Telepon:" else "WhatsApp / Phone Number:",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = newPhone,
+                        onValueChange = { newPhone = it },
+                        placeholder = { Text("0812-3456-7890", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newName.isNotBlank()) {
+                            val newStaffId = "STF-${System.currentTimeMillis() % 1000}"
+                            val created = StaffMember(
+                                id = newStaffId,
+                                name = newName.trim(),
+                                role = if (newRole.isBlank()) "Teknisi Fasilitas Umum" else newRole.trim(),
+                                phone = if (newPhone.isBlank()) "0812-0000-0000" else newPhone.trim(),
+                                activeTasks = 0,
+                                isAvailable = true
+                            )
+                            onAddStaff(created)
+                            showAddStaffDialog = false
+                        }
+                    },
+                    enabled = newName.isNotBlank()
+                ) {
+                    Text(if (isIndonesian) "Simpan Staf" else "Save Staff", color = Color(0xFF2563EB), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddStaffDialog = false }) {
+                    Text(if (isIndonesian) "Batal" else "Cancel", color = textSecondary)
+                }
+            }
+        )
+    }
+
+    // Dialog: Konfirmasi Hapus Staf
+    if (staffToDelete != null) {
+        val target = staffToDelete!!
+        AlertDialog(
+            onDismissRequest = { staffToDelete = null },
+            title = {
+                Text(
+                    text = if (isIndonesian) "Hapus Staf?" else "Remove Staff?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (isIndonesian)
+                        "Apakah Anda yakin ingin menghapus '${target.name}' (${target.role}) dari daftar teknisi sekolah?"
+                    else
+                        "Are you sure you want to remove '${target.name}' from the staff list?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteStaff(target.id)
+                        staffToDelete = null
+                    }
+                ) {
+                    Text(if (isIndonesian) "Hapus" else "Delete", color = Color(0xFFEF4444), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { staffToDelete = null }) {
+                    Text(if (isIndonesian) "Batal" else "Cancel", color = textSecondary)
+                }
+            }
+        )
     }
 }
 
@@ -1585,9 +2431,9 @@ private fun AdminUsersPelaporView(
                                         ) {
                                             Text(
                                                 text = when {
-                                                    isUserSuperAdmin -> "ADMIN UTAMA"
+                                                    isUserSuperAdmin -> if (isIndonesian) "ADMIN UTAMA" else "SUPER ADMIN"
                                                     isUserAdmin -> "ADMIN"
-                                                    else -> "PELAPOR"
+                                                    else -> if (isIndonesian) "PELAPOR" else "REPORTER"
                                                 },
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Black,
@@ -1686,8 +2532,19 @@ private fun AdminCategoriesLocationsView(
     cardBg: Color,
     borderCol: Color,
     textPrimary: Color,
-    textSecondary: Color
+    textSecondary: Color,
+    onAddRoomToFloor: (floorName: String, roomName: String) -> Unit = { _, _ -> },
+    onDeleteRoomFromFloor: (floorName: String, roomName: String) -> Unit = { _, _ -> }
 ) {
+    var roomSearchQuery by rememberSaveable { mutableStateOf("") }
+    var selectedFloorForAdd by remember { mutableStateOf<String?>(null) }
+    var newRoomNameInput by remember { mutableStateOf("") }
+    var roomToDeletePair by remember { mutableStateOf<Pair<String, String>?>(null) }
+
+    val categories = SchoolFacilityMasterData.defaultCategories
+
+    val totalRoomsCount = remember(locations) { locations.sumOf { it.rooms.size } }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1705,18 +2562,66 @@ private fun AdminCategoriesLocationsView(
 
         Text(
             text = if (isIndonesian)
-                "Struktur pembagian denah gedung sekolah dan sebaran kategori kerusakan fasilitas."
+                "Denah resmi gedung sekolah ($totalRoomsCount ruangan terdaftar) dan 8 kategori sarana prasarana."
             else
-                "School building layout breakdown and facility damage category distribution.",
+                "Official school building floor plan ($totalRoomsCount rooms registered) and facility categories.",
             fontSize = 12.sp,
             color = textSecondary
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Search Bar for Rooms Across All Floors
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = cardBg,
+            border = BorderStroke(1.dp, borderCol)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SearchVectorIcon(color = textSecondary, size = 18.dp)
+                Spacer(modifier = Modifier.width(10.dp))
+                BasicTextField(
+                    value = roomSearchQuery,
+                    onValueChange = { roomSearchQuery = it },
+                    textStyle = TextStyle(fontSize = 13.5.sp, color = textPrimary),
+                    modifier = Modifier.weight(1f),
+                    decorationBox = { inner ->
+                        if (roomSearchQuery.isEmpty()) {
+                            Text(
+                                text = if (isIndonesian) "Cari ruangan di seluruh lantai... (contoh: XII RPL, Lab, Kantin)" else "Search rooms across floors...",
+                                fontSize = 13.sp,
+                                color = textSecondary
+                            )
+                        }
+                        inner()
+                    }
+                )
+                if (roomSearchQuery.isNotEmpty()) {
+                    Text(
+                        text = "✕",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textSecondary,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable { roomSearchQuery = "" }
+                            .padding(4.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
 
         // Categories Overview
         Text(
-            text = if (isIndonesian) "Kategori Sarana & Prasarana" else "Facility Categories",
+            text = if (isIndonesian) "8 Kategori Kerusakan Fasilitas" else "8 Facility Damage Categories",
             fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
             color = textPrimary
@@ -1724,12 +2629,15 @@ private fun AdminCategoriesLocationsView(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        val categories = listOf(
-            "Kelistrikan" to Color(0xFFF59E0B),
-            "AC & Elektronik" to Color(0xFF3B82F6),
-            "Sanitasi & Air" to Color(0xFF06B6D4),
-            "Perabot & Sipil" to Color(0xFF8B5CF6),
-            "Jaringan & IT" to Color(0xFF10B981)
+        val categoryColors = listOf(
+            Color(0xFF3B82F6), // Electronics
+            Color(0xFF8B5CF6), // Furniture
+            Color(0xFF06B6D4), // Plumbing
+            Color(0xFFF97316), // Building Facility
+            Color(0xFF0EA5E9), // AC & Air System
+            Color(0xFFEAB308), // Lighting
+            Color(0xFF10B981), // Sanitary
+            Color(0xFF64748B)  // Lainnya
         )
 
         Row(
@@ -1738,7 +2646,8 @@ private fun AdminCategoriesLocationsView(
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            categories.forEach { (catName, catColor) ->
+            categories.forEachIndexed { index, (catName, catDesc) ->
+                val catColor = categoryColors[index % categoryColors.size]
                 val count = reportsList.count { it.category.contains(catName.substringBefore(" "), ignoreCase = true) }
                 Surface(
                     shape = RoundedCornerShape(10.dp),
@@ -1746,7 +2655,9 @@ private fun AdminCategoriesLocationsView(
                     border = BorderStroke(1.dp, borderCol)
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        modifier = Modifier
+                            .width(130.dp)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Box(
@@ -1759,11 +2670,14 @@ private fun AdminCategoriesLocationsView(
                             text = catName,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = textPrimary
+                            color = textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = "$count " + if (isIndonesian) "laporan" else "reports",
-                            fontSize = 11.sp,
+                            fontSize = 10.5.sp,
                             color = textSecondary
                         )
                     }
@@ -1771,108 +2685,266 @@ private fun AdminCategoriesLocationsView(
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(22.dp))
 
-        // Floor Breakdowns (4 Floors)
-        Text(
-            text = if (isIndonesian) "Sebaran Lokasi Per Lantai Gedung" else "Locations Breakdown By Floor",
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            color = textPrimary
-        )
+        // Floor Breakdowns (4 Real Floors)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (isIndonesian) "Denah Gedung Sekolah (4 Lantai)" else "School Building Layout (4 Floors)",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = textPrimary
+            )
+            Text(
+                text = if (isIndonesian) "Sesuai Penempatan Asli" else "Official School Layout",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF2563EB)
+            )
+        }
 
         Spacer(modifier = Modifier.height(10.dp))
 
         locations.forEach { loc ->
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                shape = RoundedCornerShape(14.dp),
-                color = cardBg,
-                border = BorderStroke(1.dp, borderCol)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(Color(0xFFEFF6FF), RoundedCornerShape(8.dp)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                LocationBuildingIcon(color = Color(0xFF2563EB), size = 20.dp)
-                            }
+            val matchingRooms = if (roomSearchQuery.isBlank()) {
+                loc.rooms
+            } else {
+                loc.rooms.filter { it.contains(roomSearchQuery, ignoreCase = true) }
+            }
 
-                            Spacer(modifier = Modifier.width(12.dp))
-
-                            Column {
-                                Text(
-                                    text = loc.floorName,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = textPrimary
-                                )
-                                Text(
-                                    text = loc.floorDesc,
-                                    fontSize = 11.5.sp,
-                                    color = textSecondary
-                                )
-                            }
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = Color(0xFFEFF6FF)
+            // Only display floor card if query is blank or has matching rooms
+            if (roomSearchQuery.isBlank() || matchingRooms.isNotEmpty()) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 14.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = cardBg,
+                    border = BorderStroke(1.dp, borderCol)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(
-                                text = "${loc.roomCount} " + if (isIndonesian) "Ruangan" else "Rooms",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF2563EB),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = if (isIndonesian) "Daftar Ruangan Terdaftar:" else "Registered Rooms:",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = textSecondary
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        loc.rooms.forEach { room ->
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = if (isDarkMode) Color(0xFF334155) else Color(0xFFF1F5F9)
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = room,
-                                    fontSize = 11.sp,
-                                    color = textPrimary,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(Color(0xFFEFF6FF), RoundedCornerShape(8.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    LocationBuildingIcon(color = Color(0xFF2563EB), size = 20.dp)
+                                }
+
+                                Spacer(modifier = Modifier.width(12.dp))
+
+                                Column {
+                                    Text(
+                                        text = loc.floorName,
+                                        fontSize = 14.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = textPrimary
+                                    )
+                                    Text(
+                                        text = loc.floorDesc,
+                                        fontSize = 11.sp,
+                                        color = textSecondary
+                                    )
+                                }
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFFEFF6FF)
+                                ) {
+                                    Text(
+                                        text = "${loc.rooms.size} " + if (isIndonesian) "Ruangan" else "Rooms",
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF2563EB),
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(6.dp))
+
+                                // Button: Tambah Ruangan ke Lantai Ini
+                                Surface(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable {
+                                            newRoomNameInput = ""
+                                            selectedFloorForAdd = loc.floorName
+                                        },
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFFEFF6FF),
+                                    border = BorderStroke(1.dp, Color(0xFF2563EB).copy(alpha = 0.3f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        PlusVectorIcon(color = Color(0xFF2563EB), size = 11.dp)
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = if (isIndonesian) "Ruang" else "Add",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF2563EB)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = if (matchingRooms.size == loc.rooms.size)
+                                (if (isIndonesian) "Daftar Penempatan Ruangan (${matchingRooms.size}):" else "Registered Rooms (${matchingRooms.size}):")
+                            else
+                                (if (isIndonesian) "Hasil Pencarian Ruangan (${matchingRooms.size} dari ${loc.rooms.size}):" else "Search Results (${matchingRooms.size} of ${loc.rooms.size}):"),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = textSecondary
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Scrollable room chips with tap to delete/inspect
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            matchingRooms.forEach { room ->
+                                val isHighlighted = roomSearchQuery.isNotBlank() && room.contains(roomSearchQuery, ignoreCase = true)
+                                Surface(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable {
+                                            roomToDeletePair = Pair(loc.floorName, room)
+                                        },
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (isHighlighted) Color(0xFFDBEAFE) else (if (isDarkMode) Color(0xFF334155) else Color(0xFFF1F5F9)),
+                                    border = if (isHighlighted) BorderStroke(1.dp, Color(0xFF2563EB)) else null
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = room,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isHighlighted) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isHighlighted) Color(0xFF1D4ED8) else textPrimary
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Dialog: Tambah Ruangan ke Lantai
+    if (selectedFloorForAdd != null) {
+        val targetFloor = selectedFloorForAdd!!
+        AlertDialog(
+            onDismissRequest = { selectedFloorForAdd = null },
+            title = {
+                Text(
+                    text = if (isIndonesian) "Tambah Ruangan ke $targetFloor" else "Add Room to $targetFloor",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = if (isIndonesian) "Masukkan nama ruangan baru yang ada di $targetFloor:" else "Enter the new room name on $targetFloor:",
+                        fontSize = 12.sp,
+                        color = textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = newRoomNameInput,
+                        onValueChange = { newRoomNameInput = it },
+                        placeholder = { Text("Contoh: Lab Jaringan 2, Ruang Konseling", fontSize = 12.5.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newRoomNameInput.isNotBlank()) {
+                            onAddRoomToFloor(targetFloor, newRoomNameInput.trim())
+                            selectedFloorForAdd = null
+                        }
+                    },
+                    enabled = newRoomNameInput.isNotBlank()
+                ) {
+                    Text(if (isIndonesian) "Tambah Ruangan" else "Add Room", color = Color(0xFF2563EB), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { selectedFloorForAdd = null }) {
+                    Text(if (isIndonesian) "Batal" else "Cancel", color = textSecondary)
+                }
+            }
+        )
+    }
+
+    // Dialog: Konfirmasi Hapus Ruangan
+    if (roomToDeletePair != null) {
+        val (floorName, roomName) = roomToDeletePair!!
+        AlertDialog(
+            onDismissRequest = { roomToDeletePair = null },
+            title = {
+                Text(
+                    text = if (isIndonesian) "Hapus Ruangan?" else "Remove Room?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (isIndonesian)
+                        "Apakah Anda ingin menghapus ruangan '$roomName' dari daftar $floorName?"
+                    else
+                        "Do you want to remove room '$roomName' from $floorName?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteRoomFromFloor(floorName, roomName)
+                        roomToDeletePair = null
+                    }
+                ) {
+                    Text(if (isIndonesian) "Hapus" else "Delete", color = Color(0xFFEF4444), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { roomToDeletePair = null }) {
+                    Text(if (isIndonesian) "Batal" else "Cancel", color = textSecondary)
+                }
+            }
+        )
     }
 }
 
@@ -1934,71 +3006,131 @@ private fun AdminNotifView(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(notifications, key = { it.id }) { notif ->
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { onNotificationClick(notif) },
-                    shape = RoundedCornerShape(14.dp),
-                    color = if (!notif.isRead) (if (isDarkMode) Color(0xFF1E293B) else Color(0xFFEFF6FF)) else cardBg,
-                    border = BorderStroke(1.dp, if (!notif.isRead) Color(0xFF2563EB).copy(alpha = 0.4f) else borderCol)
+        if (notifications.isEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = cardBg,
+                border = BorderStroke(1.dp, borderCol)
+            ) {
+                Column(
+                    modifier = Modifier.padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Row(
+                    AdminBellIcon(color = textSecondary, size = 32.dp)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = if (isIndonesian) "Belum ada notifikasi laporan baru" else "No report notifications yet",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textPrimary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (isIndonesian) "Laporan yang dikirim oleh siswa akan otomatis muncul di sini." else "Incoming reports from students will automatically appear here.",
+                        fontSize = 12.sp,
+                        color = textSecondary
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(notifications, key = { it.id }) { notif ->
+                    Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.Top
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onNotificationClick(notif) },
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (!notif.isRead) (if (isDarkMode) Color(0xFF1E293B) else Color(0xFFEFF6FF)) else cardBg,
+                        border = BorderStroke(
+                            width = if (!notif.isRead) 1.5.dp else 1.dp,
+                            color = if (!notif.isRead) (if (notif.isUrgent) Color(0xFFEF4444) else Color(0xFF2563EB)) else borderCol
+                        )
                     ) {
-                        Box(
+                        Row(
                             modifier = Modifier
-                                .size(38.dp)
-                                .background(
-                                    color = if (notif.isUrgent) Color(0xFFFEE2E2) else Color(0xFFEFF6FF),
-                                    shape = CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.Top
                         ) {
-                            AdminBellIcon(
-                                color = if (notif.isUrgent) Color(0xFFEF4444) else Color(0xFF2563EB),
-                                size = 20.dp
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(12.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .background(
+                                        color = if (notif.isUrgent) Color(0xFFFEE2E2) else Color(0xFFEFF6FF),
+                                        shape = CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = notif.title,
-                                    fontSize = 13.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = textPrimary,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    text = notif.timeAgo,
-                                    fontSize = 11.sp,
-                                    color = textSecondary
+                                AdminBellIcon(
+                                    color = if (notif.isUrgent) Color(0xFFEF4444) else Color(0xFF2563EB),
+                                    size = 20.dp
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
 
-                            Text(
-                                text = notif.desc,
-                                fontSize = 12.sp,
-                                color = textSecondary,
-                                lineHeight = 16.sp
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = notif.title,
+                                        fontSize = 13.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = textPrimary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (!notif.isRead) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = if (notif.isUrgent) Color(0xFFEF4444) else Color(0xFF2563EB)
+                                            ) {
+                                                Text(
+                                                    text = if (isIndonesian) "BARU" else "NEW",
+                                                    fontSize = 8.5.sp,
+                                                    fontWeight = FontWeight.Black,
+                                                    color = Color.White,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                        }
+                                        Text(
+                                            text = notif.timeAgo,
+                                            fontSize = 11.sp,
+                                            color = textSecondary
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(4.dp))
+
+                                Text(
+                                    text = notif.desc,
+                                    fontSize = 12.sp,
+                                    color = textSecondary,
+                                    lineHeight = 16.sp
+                                )
+
+                                if (notif.reportId != null) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = if (isIndonesian) "🔍 Ketuk untuk buka detail laporan →" else "🔍 Tap to open report details →",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF2563EB)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -2082,6 +3214,7 @@ private fun AdminActionButton(
 @Composable
 private fun AdminCompactReportCard(
     report: ReportData,
+    isIndonesian: Boolean = true,
     cardBg: Color,
     borderCol: Color,
     textPrimary: Color,
@@ -2113,7 +3246,7 @@ private fun AdminCompactReportCard(
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "${report.location} • ${report.userName ?: "Pelapor"}",
+                    text = "${report.location} • " + (if (isIndonesian) "Oleh " else "By ") + (report.userName ?: if (isIndonesian) "Pelapor" else "Reporter"),
                     fontSize = 11.5.sp,
                     color = textSecondary
                 )
@@ -2121,7 +3254,7 @@ private fun AdminCompactReportCard(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            AdminStatusBadge(status = report.status)
+            AdminStatusBadge(status = report.status, isIndonesian = isIndonesian)
         }
     }
 }
@@ -2136,6 +3269,7 @@ private fun AdminReportManageCard(
     textPrimary: Color,
     textSecondary: Color,
     onUpdateStatus: (String) -> Unit,
+    onOpenResolveDialog: () -> Unit,
     onOpenDetail: () -> Unit
 ) {
     Surface(
@@ -2158,16 +3292,37 @@ private fun AdminReportManageCard(
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                AdminStatusBadge(status = report.status)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    AdminPriorityBadge(priority = report.priority, isIndonesian = isIndonesian)
+                    AdminStatusBadge(status = report.status, isIndonesian = isIndonesian)
+                }
             }
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            Text(
-                text = "${report.location} • Ditulis oleh ${report.userName ?: "Pelapor"}",
-                fontSize = 12.sp,
-                color = textSecondary
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "${report.location} • " + (if (isIndonesian) "Oleh " else "By ") + (report.userName ?: if (isIndonesian) "Pelapor" else "Reporter"),
+                    fontSize = 12.sp,
+                    color = textSecondary,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (report.upvoteCount > 0) {
+                    Text(
+                        text = "👍 +${report.upvoteCount}",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF2563EB)
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(6.dp))
 
@@ -2179,37 +3334,57 @@ private fun AdminReportManageCard(
                 lineHeight = 16.sp
             )
 
+            // Attached proof notice if resolved
+            if (report.status.equals("Completed", ignoreCase = true) && (!report.completionNotes.isNullOrBlank() || !report.completionImageUrl.isNullOrBlank())) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color(0xFFF0FDF4),
+                    border = BorderStroke(0.5.dp, Color(0xFFBBF7D0))
+                ) {
+                    Text(
+                        text = "✨ " + (if (isIndonesian) "Bukti: " else "Proof: ") + (report.completionNotes ?: if (isIndonesian) "Foto terlampir" else "Photo attached"),
+                        fontSize = 11.sp,
+                        color = Color(0xFF166534),
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Action Row: Quick Status Updater and Detail Button
+            // Action Row: Clean Two-Action Layout
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Quick status change pills
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (!report.status.equals("In Progress", ignoreCase = true)) {
+                val isCompleted = report.status.equals("Completed", ignoreCase = true)
+                val isInProgress = report.status.equals("In Progress", ignoreCase = true)
+
+                when {
+                    isCompleted -> {
                         StatusActionButton(
-                            label = if (isIndonesian) "→ Diproses" else "→ In Progress",
-                            color = Color(0xFF2563EB),
+                            label = if (isIndonesian) "↺ Buka Kembali" else "↺ Reopen",
+                            color = Color(0xFFD97706),
                             onClick = { onUpdateStatus("In Progress") }
                         )
                     }
-
-                    if (!report.status.equals("Completed", ignoreCase = true)) {
+                    isInProgress -> {
                         StatusActionButton(
-                            label = if (isIndonesian) "✓ Selesai" else "✓ Resolved",
+                            label = if (isIndonesian) "✅ Selesaikan (Bukti)" else "✅ Resolve (Proof)",
                             color = Color(0xFF16A34A),
-                            onClick = { onUpdateStatus("Completed") }
+                            onClick = { onOpenResolveDialog() }
                         )
                     }
-
-                    if (report.status.equals("Completed", ignoreCase = true) || report.status.equals("In Progress", ignoreCase = true)) {
+                    else -> {
                         StatusActionButton(
-                            label = if (isIndonesian) "↺ Pending" else "↺ Pending",
-                            color = Color(0xFFD97706),
-                            onClick = { onUpdateStatus("Pending") }
+                            label = if (isIndonesian) "⚙️ Mulai Proses" else "⚙️ Start Repair",
+                            color = Color(0xFF2563EB),
+                            onClick = { onUpdateStatus("In Progress") }
                         )
                     }
                 }
@@ -2222,11 +3397,11 @@ private fun AdminReportManageCard(
                     color = if (isDarkMode) Color(0xFF334155) else Color(0xFFEFF6FF)
                 ) {
                     Text(
-                        text = if (isIndonesian) "Detail →" else "Detail →",
+                        text = if (isIndonesian) "Kelola Detail →" else "Manage Detail →",
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF2563EB),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                     )
                 }
             }
@@ -2259,11 +3434,43 @@ private fun StatusActionButton(
 }
 
 @Composable
-private fun AdminStatusBadge(status: String) {
+private fun AdminPriorityBadge(priority: String, isIndonesian: Boolean = true) {
+    val (bg, textColor) = when (priority.lowercase()) {
+        "darurat", "emergency", "high", "tinggi" -> Color(0xFFFEE2E2) to Color(0xFFDC2626)
+        "rendah", "low" -> Color(0xFFD1FAE5) to Color(0xFF15803D)
+        else -> Color(0xFFFEF3C7) to Color(0xFFD97706)
+    }
+
+    val label = when (priority.lowercase()) {
+        "darurat", "emergency" -> if (isIndonesian) "DARURAT" else "EMERGENCY"
+        "rendah", "low" -> if (isIndonesian) "RENDAH" else "LOW"
+        "tinggi", "high" -> if (isIndonesian) "TINGGI" else "HIGH"
+        else -> if (isIndonesian) "SEDANG" else "MEDIUM"
+    }
+
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = bg
+    ) {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = textColor,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+        )
+    }
+}
+
+@Composable
+private fun AdminStatusBadge(status: String, isIndonesian: Boolean = true) {
     val (bg, textColor, label) = when {
-        status.equals("Pending", ignoreCase = true) -> Triple(Color(0xFFFEF3C7), Color(0xFFB45309), "Pending")
-        status.equals("In Progress", ignoreCase = true) -> Triple(Color(0xFFEFF6FF), Color(0xFF1D4ED8), "Diproses")
-        else -> Triple(Color(0xFFDCFCE7), Color(0xFF15803D), "Selesai")
+        status.equals("Pending", ignoreCase = true) || status.equals("Menunggu", ignoreCase = true) ->
+            Triple(Color(0xFFFEF3C7), Color(0xFFB45309), if (isIndonesian) "MENUNGGU" else "PENDING")
+        status.equals("In Progress", ignoreCase = true) || status.equals("Diproses", ignoreCase = true) ->
+            Triple(Color(0xFFEFF6FF), Color(0xFF1D4ED8), if (isIndonesian) "DIPROSES" else "IN PROGRESS")
+        else ->
+            Triple(Color(0xFFDCFCE7), Color(0xFF15803D), if (isIndonesian) "SELESAI" else "RESOLVED")
     }
 
     Surface(
@@ -2507,3 +3714,77 @@ private fun SearchVectorIcon(color: Color, size: androidx.compose.ui.unit.Dp = 1
         drawLine(color = color, start = Offset(w * 0.65f, h * 0.65f), end = Offset(w * 0.88f, h * 0.88f), strokeWidth = 1.8.dp.toPx(), cap = StrokeCap.Round)
     }
 }
+
+@Composable
+private fun PlusVectorIcon(color: Color, size: androidx.compose.ui.unit.Dp = 16.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+
+        drawLine(
+            color = color,
+            start = Offset(w * 0.15f, h * 0.5f),
+            end = Offset(w * 0.85f, h * 0.5f),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(w * 0.5f, h * 0.15f),
+            end = Offset(w * 0.5f, h * 0.85f),
+            strokeWidth = 2.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+@Composable
+private fun TrashVectorIcon(color: Color, size: androidx.compose.ui.unit.Dp = 16.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+
+        // Top lid bar
+        drawLine(
+            color = color,
+            start = Offset(w * 0.2f, h * 0.25f),
+            end = Offset(w * 0.8f, h * 0.25f),
+            strokeWidth = 1.8.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+        // Top handle
+        drawLine(
+            color = color,
+            start = Offset(w * 0.4f, h * 0.15f),
+            end = Offset(w * 0.6f, h * 0.15f),
+            strokeWidth = 1.6.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+        // Bin body
+        val binPath = Path().apply {
+            moveTo(w * 0.28f, h * 0.25f)
+            lineTo(w * 0.32f, h * 0.85f)
+            cubicTo(w * 0.33f, h * 0.9f, w * 0.38f, h * 0.92f, w * 0.45f, h * 0.92f)
+            lineTo(w * 0.55f, h * 0.92f)
+            cubicTo(w * 0.62f, h * 0.92f, w * 0.67f, h * 0.9f, w * 0.68f, h * 0.85f)
+            lineTo(w * 0.72f, h * 0.25f)
+        }
+        drawPath(binPath, color = color, style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        // Inner vertical slats
+        drawLine(
+            color = color,
+            start = Offset(w * 0.42f, h * 0.38f),
+            end = Offset(w * 0.42f, h * 0.76f),
+            strokeWidth = 1.3.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(w * 0.58f, h * 0.38f),
+            end = Offset(w * 0.58f, h * 0.76f),
+            strokeWidth = 1.3.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+    }
+}
+

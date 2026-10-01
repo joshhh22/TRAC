@@ -14,5 +14,10 @@ data class ReportData(
     @SerialName("category") val category: String,
     @SerialName("description") val description: String,
     @SerialName("status") val status: String = "Pending",
-    @SerialName("image_url") val imageUrl: String? = null
+    @SerialName("image_url") val imageUrl: String? = null,
+    @SerialName("priority") val priority: String = "Sedang",
+    @SerialName("completion_image_url") val completionImageUrl: String? = null,
+    @SerialName("completion_notes") val completionNotes: String? = null,
+    @SerialName("upvote_count") val upvoteCount: Int = 0
 )
+

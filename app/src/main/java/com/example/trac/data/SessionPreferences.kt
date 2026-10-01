@@ -2,6 +2,9 @@ package com.example.trac.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 class SessionPreferences(context: Context) {
     private val prefs: SharedPreferences =
@@ -102,6 +105,100 @@ class SessionPreferences(context: Context) {
         prefs.edit().putBoolean(KEY_IS_DARK_MODE, isDark).apply()
     }
 
+    fun getStaffList(): List<StaffMember> {
+        val raw = prefs.getString(KEY_STAFF_MEMBERS_JSON, null)
+        if (!raw.isNullOrBlank()) {
+            runCatching {
+                return Json.decodeFromString<List<StaffMember>>(raw)
+            }
+        }
+        return defaultStaffList
+    }
+
+    fun saveStaffList(list: List<StaffMember>) {
+        runCatching {
+            val json = Json.encodeToString(list)
+            prefs.edit().putString(KEY_STAFF_MEMBERS_JSON, json).apply()
+        }
+    }
+
+    fun getReadNotificationIds(): Set<String> {
+        return prefs.getStringSet(KEY_READ_NOTIFICATION_IDS, emptySet()) ?: emptySet()
+    }
+
+    fun markNotificationAsRead(id: String) {
+        val current = getReadNotificationIds().toMutableSet()
+        current.add(id)
+        prefs.edit().putStringSet(KEY_READ_NOTIFICATION_IDS, current).apply()
+    }
+
+    fun markAllNotificationsAsRead(ids: Collection<String>) {
+        val current = getReadNotificationIds().toMutableSet()
+        current.addAll(ids)
+        prefs.edit().putStringSet(KEY_READ_NOTIFICATION_IDS, current).apply()
+    }
+
+    fun isNotificationRead(id: String): Boolean {
+        return getReadNotificationIds().contains(id)
+    }
+
+    fun getReadAdminNotificationIds(): Set<String> {
+        return prefs.getStringSet(KEY_READ_ADMIN_NOTIF_IDS, emptySet()) ?: emptySet()
+    }
+
+    fun markAdminNotificationAsRead(id: String) {
+        val current = getReadAdminNotificationIds().toMutableSet()
+        current.add(id)
+        prefs.edit().putStringSet(KEY_READ_ADMIN_NOTIF_IDS, current).apply()
+    }
+
+    fun markAllAdminNotificationsAsRead(ids: Collection<String>) {
+        val current = getReadAdminNotificationIds().toMutableSet()
+        current.addAll(ids)
+        prefs.edit().putStringSet(KEY_READ_ADMIN_NOTIF_IDS, current).apply()
+    }
+
+    fun getStatusOverrides(): Map<String, String> {
+        val raw = prefs.getString(KEY_STATUS_OVERRIDES, null) ?: return emptyMap()
+        return runCatching { Json.decodeFromString<Map<String, String>>(raw) }.getOrDefault(emptyMap())
+    }
+
+    fun saveStatusOverride(reportId: String, status: String) {
+        val current = getStatusOverrides().toMutableMap()
+        current[reportId] = status
+        prefs.edit().putString(KEY_STATUS_OVERRIDES, Json.encodeToString(current)).apply()
+    }
+
+    fun getCompletionNotesOverrides(): Map<String, String> {
+        val raw = prefs.getString(KEY_COMPLETION_NOTES_OVERRIDES, null) ?: return emptyMap()
+        return runCatching { Json.decodeFromString<Map<String, String>>(raw) }.getOrDefault(emptyMap())
+    }
+
+    fun saveCompletionNotesOverride(reportId: String, notes: String?) {
+        val current = getCompletionNotesOverrides().toMutableMap()
+        if (notes != null) {
+            current[reportId] = notes
+        } else {
+            current.remove(reportId)
+        }
+        prefs.edit().putString(KEY_COMPLETION_NOTES_OVERRIDES, Json.encodeToString(current)).apply()
+    }
+
+    fun getCompletionImageOverrides(): Map<String, String> {
+        val raw = prefs.getString(KEY_COMPLETION_IMAGE_OVERRIDES, null) ?: return emptyMap()
+        return runCatching { Json.decodeFromString<Map<String, String>>(raw) }.getOrDefault(emptyMap())
+    }
+
+    fun saveCompletionImageOverride(reportId: String, image: String?) {
+        val current = getCompletionImageOverrides().toMutableMap()
+        if (image != null) {
+            current[reportId] = image
+        } else {
+            current.remove(reportId)
+        }
+        prefs.edit().putString(KEY_COMPLETION_IMAGE_OVERRIDES, Json.encodeToString(current)).apply()
+    }
+
     fun getUserId(): String = prefs.getString(KEY_USER_ID, "") ?: ""
 
     fun clearSession() {
@@ -117,8 +214,22 @@ class SessionPreferences(context: Context) {
         private const val KEY_USER_CLASS = "key_user_class"
         private const val KEY_USER_ROLE = "key_user_role"
         private const val KEY_ADMIN_EMAILS = "key_admin_emails"
+        private const val KEY_STAFF_MEMBERS_JSON = "key_staff_members_json"
+        private const val KEY_READ_NOTIFICATION_IDS = "key_read_notification_ids"
+        private const val KEY_READ_ADMIN_NOTIF_IDS = "key_read_admin_notif_ids"
         private const val KEY_PROFILE_IMAGE = "key_profile_image"
         private const val KEY_IS_INDONESIAN = "key_is_indonesian"
         private const val KEY_IS_DARK_MODE = "key_is_dark_mode"
+        private const val KEY_STATUS_OVERRIDES = "key_status_overrides"
+        private const val KEY_COMPLETION_NOTES_OVERRIDES = "key_completion_notes_overrides"
+        private const val KEY_COMPLETION_IMAGE_OVERRIDES = "key_completion_image_overrides"
+
+        val defaultStaffList = listOf(
+            StaffMember("STF-01", "Pak Joko Widodo", "Teknisi Kelistrikan & Lampu", "0812-3456-7890", 2, true),
+            StaffMember("STF-02", "Pak Bambang Pamungkas", "Teknisi AC & Pendingin Ruangan", "0813-8877-6655", 1, true),
+            StaffMember("STF-03", "Ibu Siti Khadijah", "Koordinator Fasilitas & Sanitasi", "0819-2233-4455", 1, true),
+            StaffMember("STF-04", "Mas Fajar Pratama", "Teknisi IT, Lab & Jaringan", "0857-1122-3344", 3, true),
+            StaffMember("STF-05", "Pak Rudi Hartono", "Staff Sarpras & Perabot Sipil", "0821-9988-7766", 0, true)
+        )
     }
 }

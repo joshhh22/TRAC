@@ -46,6 +46,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -63,6 +65,8 @@ fun HomeTracScreen(
     isIndonesian: Boolean = false,
     isDarkMode: Boolean = false,
     reportsList: List<ReportData> = emptyList(),
+    unreadNotificationCount: Int = 0,
+    onRefreshReports: () -> Unit = {},
     onCreateReportClick: () -> Unit = {},
     onViewAllReportsClick: () -> Unit = {},
     onReportsTabClick: () -> Unit = {},
@@ -71,6 +75,10 @@ fun HomeTracScreen(
     onLogoutClick: () -> Unit = {}
 ) {
     val isPreview = LocalInspectionMode.current
+
+    LaunchedEffect(Unit) {
+        onRefreshReports()
+    }
 
     // Dynamic Theme Colors
     val pageBg = if (isDarkMode) Color(0xFF0F172A) else Color(0xFFF8FAFD)
@@ -83,6 +91,16 @@ fun HomeTracScreen(
     val totalReportsCount = reportsList.size
     val inProgressCount = reportsList.count { it.status.equals("In Progress", ignoreCase = true) }
     val completedCount = reportsList.count { it.status.equals("Completed", ignoreCase = true) }
+
+    // Active reports for Home (Pending & In Progress only, sorted newest to oldest)
+    val activeReports = remember(reportsList) {
+        reportsList
+            .filterNot { it.status.equals("Completed", ignoreCase = true) }
+            .sortedWith(
+                compareByDescending<ReportData> { it.createdAt ?: "" }
+                    .thenByDescending { it.id ?: "" }
+            )
+    }
 
     // Staggered entrance animation states
     val headerAlpha = remember { Animatable(if (isPreview) 1f else 0f) }
@@ -182,6 +200,9 @@ fun HomeTracScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val profileBitmap = remember(userProfileImage) {
@@ -223,26 +244,32 @@ fun HomeTracScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(14.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
 
-                    Column {
+                    Column(
+                        modifier = Modifier.weight(1f)
+                    ) {
                         Text(
                             text = if (isIndonesian) "Halo, $userName!" else "Hello, $userName!",
-                            fontSize = 20.sp,
+                            fontSize = 19.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            color = textPrimary
+                            color = textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = if (isIndonesian) "Terima kasih telah peduli terhadap sekolah." else "Thank you for caring about the school environment.",
-                            fontSize = 12.sp,
+                            text = if (isIndonesian) "Terima kasih telah peduli lingkungan sekolah." else "Thank you for caring about the school environment.",
+                            fontSize = 11.5.sp,
                             fontWeight = FontWeight.Medium,
-                            color = textSecondary
+                            color = textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
-                // Bell Icon
+                // Bell Icon with unread badge indicator
                 Surface(
                     modifier = Modifier
                         .size(42.dp)
@@ -260,6 +287,15 @@ fun HomeTracScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         BellIcon(color = textPrimary)
+                        if (unreadNotificationCount > 0) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .align(Alignment.TopEnd)
+                                    .padding(top = 6.dp, end = 6.dp)
+                                    .background(Color(0xFFEF4444), CircleShape)
+                            )
+                        }
                     }
                 }
             }
@@ -431,8 +467,52 @@ fun HomeTracScreen(
                             )
                         }
                     }
+                } else if (activeReports.isEmpty()) {
+                    // All reports are already completed
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .shadow(
+                                elevation = 4.dp,
+                                shape = RoundedCornerShape(20.dp),
+                                spotColor = Color(0x0D000000)
+                            ),
+                        shape = RoundedCornerShape(20.dp),
+                        color = cardBg,
+                        border = BorderStroke(1.dp, borderCol)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 28.dp, horizontal = 20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .background(Color(0xFFDCFCE7), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CheckmarkIcon(color = Color(0xFF15803D), size = 22.dp)
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = if (isIndonesian) "Semua Laporan Telah Selesai!" else "All Reports Completed!",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = textPrimary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isIndonesian) "Tidak ada laporan aktif yang belum selesai saat ini." else "There are no pending or in-progress reports right now.",
+                                fontSize = 12.sp,
+                                color = textSecondary,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
                 } else {
-                    reportsList.take(5).forEach { report ->
+                    activeReports.take(5).forEach { report ->
                         ReportCardItem(
                             report = report,
                             isIndonesian = isIndonesian,
@@ -446,6 +526,8 @@ fun HomeTracScreen(
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(84.dp))
         }
     }
 }
@@ -542,20 +624,73 @@ private fun ReportCardItem(
 
                 Spacer(modifier = Modifier.width(14.dp))
 
-                Column {
-                    Text(
-                        text = report.title,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = textPrimary
-                    )
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = report.title,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (report.priority.equals("Darurat", ignoreCase = true) || report.priority.equals("High", ignoreCase = true)) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFFEE2E2)
+                            ) {
+                                Text(
+                                    text = if (isIndonesian) "DARURAT" else "EMERGENCY",
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = Color(0xFFDC2626),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                )
+                            }
+                        } else if (report.priority.equals("Rendah", ignoreCase = true) || report.priority.equals("Low", ignoreCase = true)) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFDCFCE7)
+                            ) {
+                                Text(
+                                    text = if (isIndonesian) "RENDAH" else "LOW",
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF16A34A),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
                     Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = "${report.location} • ${report.createdAt?.take(10) ?: ""}",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textSecondary
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "${report.location} • ${report.createdAt?.take(10) ?: ""}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (report.upvoteCount > 0) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "👍 ${report.upvoteCount}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF2563EB)
+                            )
+                        }
+                    }
                 }
             }
 
@@ -661,6 +796,29 @@ private fun PlusIcon(color: Color, size: Dp) {
             end = Offset(w * 0.85f, h * 0.5f),
             strokeWidth = 2.5.dp.toPx(),
             cap = StrokeCap.Round
+        )
+    }
+}
+
+@Composable
+private fun CheckmarkIcon(color: Color, size: Dp = 22.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+
+        val path = Path().apply {
+            moveTo(w * 0.22f, h * 0.52f)
+            lineTo(w * 0.42f, h * 0.72f)
+            lineTo(w * 0.78f, h * 0.28f)
+        }
+        drawPath(
+            path = path,
+            color = color,
+            style = Stroke(
+                width = 2.4.dp.toPx(),
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round
+            )
         )
     }
 }

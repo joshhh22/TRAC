@@ -39,7 +39,26 @@ class ReportViewModel(
         viewModelScope.launch {
             repository.getReports()
                 .onSuccess { list ->
-                    _reports.value = list
+                    val statusOverrides = sessionPrefs.getStatusOverrides()
+                    val notesOverrides = sessionPrefs.getCompletionNotesOverrides()
+                    val imgOverrides = sessionPrefs.getCompletionImageOverrides()
+
+                    _reports.value = list.map { r ->
+                        val localStatus = statusOverrides[r.id]
+                        val localNotes = notesOverrides[r.id]
+                        val localImg = imgOverrides[r.id]
+
+                        if (localStatus != null || localNotes != null || localImg != null) {
+                            r.copy(
+                                status = localStatus ?: r.status,
+                                completionNotes = localNotes ?: r.completionNotes,
+                                completionImageUrl = localImg ?: r.completionImageUrl
+                            )
+                        } else r
+                    }.sortedWith(
+                        compareByDescending<ReportData> { it.createdAt ?: "" }
+                            .thenByDescending { it.id ?: "" }
+                    )
                 }
                 .onFailure {
                     // Keep existing list
@@ -52,7 +71,8 @@ class ReportViewModel(
         location: String,
         title: String,
         description: String,
-        imageUrl: String? = null
+        imageUrl: String? = null,
+        priority: String = "Sedang"
     ) {
         if (title.isBlank() || description.isBlank() || category.isBlank() || location.isBlank()) {
             _uiState.value = ReportUiState.Error("Harap lengkapi seluruh formulir laporan.")
@@ -70,7 +90,8 @@ class ReportViewModel(
                 category = category.trim(),
                 description = description.trim(),
                 status = "Pending",
-                imageUrl = imageUrl
+                imageUrl = imageUrl,
+                priority = priority.ifBlank { "Sedang" }
             )
 
             repository.createReport(newReport)
@@ -85,21 +106,55 @@ class ReportViewModel(
         }
     }
 
-    fun updateReportStatus(reportId: String, newStatus: String, onResult: (Boolean) -> Unit = {}) {
-        viewModelScope.launch {
-            // Optimistic update so UI immediately reflects state change
-            _reports.value = _reports.value.map { r ->
-                if (r.id == reportId) r.copy(status = newStatus) else r
-            }
+    fun updateReportStatus(
+        reportId: String,
+        newStatus: String,
+        completionImageUrl: String? = null,
+        completionNotes: String? = null,
+        onResult: (Boolean) -> Unit = {}
+    ) {
+        // 1. Immediately persist to local device storage so state never resets
+        sessionPrefs.saveStatusOverride(reportId, newStatus)
+        if (completionNotes != null) {
+            sessionPrefs.saveCompletionNotesOverride(reportId, completionNotes)
+        }
+        if (completionImageUrl != null) {
+            sessionPrefs.saveCompletionImageOverride(reportId, completionImageUrl)
+        }
 
-            val result = repository.updateReportStatus(reportId, newStatus)
+        // 2. Optimistic update in-memory StateFlow
+        _reports.value = _reports.value.map { r ->
+            if (r.id == reportId) {
+                r.copy(
+                    status = newStatus,
+                    completionImageUrl = completionImageUrl ?: r.completionImageUrl,
+                    completionNotes = completionNotes ?: r.completionNotes
+                )
+            } else r
+        }
+
+        // 3. Sync to Supabase in background
+        viewModelScope.launch {
+            val result = repository.updateReportStatus(reportId, newStatus, completionImageUrl, completionNotes)
             result.onSuccess {
-                fetchReports()
                 onResult(true)
             }.onFailure {
-                // If it fails on Supabase (e.g. offline/RLS), keep the local change for smooth offline demo
                 onResult(false)
             }
+        }
+    }
+
+    fun upvoteReport(reportId: String) {
+        val target = _reports.value.find { it.id == reportId } ?: return
+        val newCount = target.upvoteCount + 1
+
+        // Optimistic update for instant UI feedback
+        _reports.value = _reports.value.map { r ->
+            if (r.id == reportId) r.copy(upvoteCount = newCount) else r
+        }
+
+        viewModelScope.launch {
+            repository.upvoteReport(reportId, newCount)
         }
     }
 

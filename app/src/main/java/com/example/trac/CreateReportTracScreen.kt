@@ -91,7 +91,7 @@ fun CreateReportTracScreen(
     onBackClick: () -> Unit = {},
     onHomeTabClick: () -> Unit = {},
     onReportsTabClick: () -> Unit = {},
-    onSubmitReportClick: (category: String, location: String, title: String, description: String, imageUrl: String?) -> Unit = { _, _, _, _, _ -> },
+    onSubmitReportClick: (category: String, location: String, title: String, description: String, imageUrl: String?, priority: String) -> Unit = { _, _, _, _, _, _ -> },
     onLogoutClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -113,6 +113,7 @@ fun CreateReportTracScreen(
 
     var reportTitle by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
+    var selectedPriority by rememberSaveable { mutableStateOf("Sedang") }
 
     var isCategoryExpanded by remember { mutableStateOf(false) }
 
@@ -532,7 +533,70 @@ fun CreateReportTracScreen(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Section 5: Photo
+                // Field 5: Urgency / Priority Level Selection
+                Text(
+                    text = if (isIndonesian) "Tingkat Urgensi / Prioritas" else "Priority Level",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textSecondary
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val priorityOptions = listOf(
+                    Triple("Rendah", if (isIndonesian) "Rendah" else "Low", Color(0xFF10B981)),
+                    Triple("Sedang", if (isIndonesian) "Sedang" else "Medium", Color(0xFFF59E0B)),
+                    Triple("Darurat", if (isIndonesian) "Darurat" else "Emergency", Color(0xFFEF4444))
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    priorityOptions.forEach { (key, label, accentColor) ->
+                        val isSelected = selectedPriority.equals(key, ignoreCase = true)
+                        val chipBg = if (isSelected) accentColor.copy(alpha = 0.15f) else cardBg
+                        val chipBorder = if (isSelected) accentColor else borderCol
+
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { selectedPriority = key }
+                                .shadow(
+                                    elevation = if (isSelected) 4.dp else 1.dp,
+                                    shape = RoundedCornerShape(14.dp),
+                                    spotColor = if (isSelected) accentColor.copy(alpha = 0.25f) else Color(0x0A000000)
+                                ),
+                            shape = RoundedCornerShape(14.dp),
+                            color = chipBg,
+                            border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, chipBorder)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp, horizontal = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .background(accentColor, CircleShape)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = label,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                    color = if (isSelected) accentColor else textPrimary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // Section 6: Photo
                 Text(
                     text = if (isIndonesian) "Foto Fasilitas (Opsional)" else "Photo (Optional)",
                     fontSize = 13.sp,
@@ -643,7 +707,7 @@ fun CreateReportTracScreen(
                                     else -> null
                                 }
                                 isEncodingImage = false
-                                onSubmitReportClick(finalCategory, finalLocation, reportTitle, description, encodedImage)
+                                onSubmitReportClick(finalCategory, finalLocation, reportTitle, description, encodedImage, selectedPriority)
                             }
                         }
                     },
